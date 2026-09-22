@@ -1,4 +1,5 @@
 import Foundation
+@testable import FibreMonitor
 
 /// Response shapes captured from an HG8145X6-10, with made-up values.
 enum Fixtures {
