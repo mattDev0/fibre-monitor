@@ -1,0 +1,108 @@
+name: Build iOS IPA
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Publish as a GitHub Release'
+        required: false
+        type: boolean
+        default: true
+      release_tag:
+        description: 'Release tag (default: v<MARKETING_VERSION>-ios)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-ios:
+    name: Build Native iOS App
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode Version
+        run: |
+          # Liquid Glass needs the iOS 26 SDK, i.e. Xcode 26 or newer.
+          XCODE=$(ls -d /Applications/Xcode_2[6-9]*.app 2>/dev/null | grep -v -i beta | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            echo "::error::No Xcode 26+ on this runner"; ls /Applications | grep -i xcode; exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+
+      - name: Generate Xcode Project
+        working-directory: .
+        run: |
+          xcodegen generate
+
+      - name: Run Unit Tests
+        run: |
+          DEST=$(xcrun simctl list devices available | grep -m 1 "iPhone" | sed -E 's/.*\(([A-F0-9-]+)\).*/\1/')
+          echo "Using Simulator ID: $DEST"
+          xcodebuild test \
+            -project FibreMonitor.xcodeproj \
+            -scheme FibreMonitor \
+            -destination "id=$DEST" \
+            -derivedDataPath build_test
+
+      - name: Build Application for Device
+        run: |
+          xcodebuild -project FibreMonitor.xcodeproj \
+            -scheme FibreMonitor \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build
+
+      - name: Verify Info.plist
+        run: |
+          # Without a launch screen key iOS runs the app letterboxed (legacy mode).
+          PLIST=build/Build/Products/Release-iphoneos/FibreMonitor.app/Info.plist
+          for key in UILaunchScreen NSLocalNetworkUsageDescription NSAppTransportSecurity; do
+            /usr/libexec/PlistBuddy -c "Print :$key" "$PLIST" > /dev/null || { echo "::error::$key missing from built Info.plist"; exit 1; }
+          done
+          echo "Version: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST") ($(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST"))"
+
+      - name: Package IPA
+        run: |
+          mkdir -p build/Payload
+          cp -r build/Build/Products/Release-iphoneos/FibreMonitor.app build/Payload/
+          cd build
+          zip -r -q FibreMonitor.ipa Payload
+          echo "IPA Size:"
+          ls -lh FibreMonitor.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FibreMonitor-iOS-IPA
+          path: build/FibreMonitor.ipa
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.create_release == 'true' || github.event_name == 'release' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.release_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="v$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/Build/Products/Release-iphoneos/FibreMonitor.app/Info.plist)-ios"
+          fi
+          gh release create "$TAG" build/FibreMonitor.ipa \
+            --title "Fibre Monitor for iOS ($TAG)" \
+            --notes "Unsigned build for Huawei OptiXstar HG8145X6 fibre routers. Install with Sideloadly, AltStore or SideStore." \
+            --draft=false \
+            --prerelease=false || gh release upload "$TAG" build/FibreMonitor.ipa --clobber

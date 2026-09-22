@@ -1,0 +1,9 @@
+.DS_Store
+*.xcodeproj/
+*.xcworkspace/
+build/
+build_test/
+DerivedData/
+*.ipa
+# Browser captures contain router credentials and cookies
+*.har

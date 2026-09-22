@@ -1,0 +1,199 @@
+import XCTest
+@testable import FibreMonitor
+
+final class HuaweiJsTests: XCTestCase {
+    func testUnescapeHexAndStandardEscapes() {
+        XCTAssertEqual(HuaweiJs.unescape("192\\x2e168\\x2e100\\x2e1"), "192.168.100.1")
+        XCTAssertEqual(HuaweiJs.unescape("a\\\"b\\\\c\\n"), "a\"b\\c\n")
+        XCTAssertEqual(HuaweiJs.unescape("\\u00e9t\\u00e9"), "été")
+    }
+
+    func testInstancesHandleCommasQuotesAndBareTokens() {
+        let text = #"x = new Array(new Foo("a,b","c\"d", 12, null),new Foo('e',"f"),null);"#
+        XCTAssertEqual(HuaweiJs.instances(of: "Foo", in: text), [["a,b", "c\"d", "12", "null"], ["e", "f"]])
+    }
+
+    func testInstancesDoNotMatchLongerConstructorNames() {
+        let text = #"new USERDeviceNew("x"), new USERDevice("y")"#
+        XCTAssertEqual(HuaweiJs.instances(of: "USERDevice", in: text), [["y"]])
+    }
+
+    func testRecordsUseInlineDefinition() {
+        let text = #"function Pair(Left, Right) {} var l = new Array(new Pair("1","2"),null);"#
+        XCTAssertEqual(HuaweiJs.records(of: "Pair", in: text), [["Left": "1", "Right": "2"]])
+    }
+
+    func testStringVar() {
+        XCTAssertEqual(HuaweiJs.stringVar("opticInfo", in: Fixtures.smartDiagnose), "-18.25")
+        XCTAssertEqual(HuaweiJs.stringVar("eponStatus", in: Fixtures.smartDiagnose), "")
+        XCTAssertNil(HuaweiJs.stringVar("missing", in: Fixtures.smartDiagnose))
+    }
+
+    func testLooksLikeData() {
+        XCTAssertTrue(HuaweiJs.looksLikeData(Fixtures.pppStats(sent: "1", received: "2")))
+        XCTAssertTrue(HuaweiJs.looksLikeData(Fixtures.devices))
+        XCTAssertFalse(HuaweiJs.looksLikeData(Fixtures.loginPage))
+    }
+}
+
+final class ParsingTests: XCTestCase {
+    func testWanParsing() {
+        let wan = HuaweiOntClient.parseWan(Fixtures.wanList)
+        XCTAssertEqual(wan.connectionStatus, "Connected")
+        XCTAssertTrue(wan.isConnected)
+        XCTAssertEqual(wan.connectionType, "PPPoE")
+        XCTAssertEqual(wan.ipAddress, "10.20.30.40")
+        XCTAssertTrue(wan.isCarrierNat)
+        XCTAssertEqual(wan.gateway, "10.20.0.1")
+        XCTAssertEqual(wan.dnsServers, ["203.0.113.1", "203.0.113.2"])
+        XCTAssertEqual(wan.vlanId, "10")
+        XCTAssertEqual(wan.uptimeSeconds, 93784)
+    }
+
+    func testOpticalParsing() {
+        var info = HuaweiOntClient.parseSmartDiagnose(Fixtures.smartDiagnose)
+        XCTAssertEqual(info.rxPowerDbm, -18.25)
+        XCTAssertTrue(info.isRegistered)
+        XCTAssertEqual(info.rxQuality, .good)
+        HuaweiOntClient.mergeOpticTxRx(Fixtures.opticTxRx, into: &info)
+        XCTAssertEqual(info.txPowerDbm, 2.31)
+        XCTAssertEqual(info.rxPowerDbm, -18.30)
+        XCTAssertEqual(info.temperatureC, 47)
+    }
+
+    func testRxQualityBands() {
+        func q(_ v: Double?) -> OpticalInfo.Quality { OpticalInfo(rxPowerDbm: v).rxQuality }
+        XCTAssertEqual(q(-5), .tooStrong)
+        XCTAssertEqual(q(-15.7), .good)
+        XCTAssertEqual(q(-25.5), .weak)
+        XCTAssertEqual(q(-29), .bad)
+        XCTAssertEqual(q(nil), .unknown)
+    }
+
+    func testDeviceParsing() {
+        let devices = HuaweiOntClient.parseDevices(Fixtures.devices)
+        XCTAssertEqual(devices.count, 3, "duplicates across lists are dropped")
+        XCTAssertEqual(devices.filter(\.isOnline).count, 2)
+        XCTAssertFalse(devices.last!.isOnline, "offline devices sort last")
+
+        let tv = devices.first { $0.mac == "aa:bb:cc:00:00:02" }!
+        XCTAssertEqual(tv.displayName, "Living-Room-TV")
+        XCTAssertEqual(tv.port, .wifi5(ssidIndex: 5))
+        XCTAssertEqual(tv.connectedText, "1d 2h")
+
+        let phone = devices.first { $0.mac == "aa:bb:cc:00:00:01" }!
+        XCTAssertEqual(phone.displayName, "Android device")
+        XCTAssertEqual(phone.port.label, "2.4 GHz")
+        XCTAssertEqual(phone.connectedText, "1h 5m")
+
+        let pc = devices.first { $0.mac == "aa:bb:cc:00:00:03" }!
+        XCTAssertEqual(pc.displayName, "Office PC", "router-side alias wins over host name")
+        XCTAssertEqual(pc.port.label, "LAN 2")
+    }
+
+    func testCounterDeltaHandlesWrapAndReset() {
+        XCTAssertEqual(HuaweiOntClient.delta(previous: 100, current: 350), 250)
+        let max32 = UInt64(UInt32.max)
+        XCTAssertEqual(HuaweiOntClient.delta(previous: max32 - 99, current: 50), 150)
+        XCTAssertNil(HuaweiOntClient.delta(previous: 1_000, current: 10), "small counter going back is a reset")
+    }
+
+    func testHighLowCountersPreferred() {
+        let r = ["BytesReceived": "5", "BytesSent": "6",
+                 "BytesReceivedHigh": "1", "BytesReceivedLow": "2", "BytesSentHigh": "0", "BytesSentLow": "7"]
+        let c = HuaweiOntClient.counters(from: r)!
+        XCTAssertEqual(c.rx, (1 << 32) | 2)
+        XCTAssertEqual(c.tx, 7)
+    }
+}
+
+final class SessionTests: XCTestCase {
+    private let creds = HuaweiOntClient.Credentials(host: "192.168.100.1", username: "root", password: "p@ss+word")
+
+    private func router() -> FakeTransport {
+        let t = FakeTransport()
+        t.on("/asp/GetRandCount.asp", Fixtures.token)
+        t.on("/login.cgi", Fixtures.loginOk)
+        t.on("/index.asp", "<html></html>")
+        t.on("/html/ssmp/common/GetRandToken.asp", Fixtures.token)
+        return t
+    }
+
+    func testLoginPostsBase64PasswordAndToken() async throws {
+        let t = router()
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+        try await client.login()
+
+        let login = t.requests.first { $0.path == "/login.cgi" }!
+        let fields = Dictionary(uniqueKeysWithValues: login.form)
+        XCTAssertEqual(fields["UserName"], "root")
+        XCTAssertEqual(fields["PassWord"], Data("p@ss+word".utf8).base64EncodedString())
+        XCTAssertEqual(fields["x.X_HW_Token"], HuaweiJs.clean(Fixtures.token), "BOM stripped from token")
+        XCTAssertEqual(fields["Language"], "english")
+        XCTAssertTrue(login.encodedForm.contains("PassWord=cEBzcyt3b3Jk"), login.encodedForm)
+        XCTAssertEqual(t.resets, 1)
+    }
+
+    func testRejectedLoginIsNotRetried() async {
+        let t = router()
+        t.on("/login.cgi", Fixtures.loginPage)
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+
+        do { _ = try await client.pollTraffic(); XCTFail("expected rejection") } catch {
+            XCTAssertEqual(error as? OntError, .loginRejected)
+        }
+        do { _ = try await client.pollTraffic(); XCTFail("expected rejection") } catch {
+            XCTAssertEqual(error as? OntError, .loginRejected)
+        }
+        XCTAssertEqual(t.paths().filter { $0 == "/login.cgi" }.count, 1, "second poll must not try the password again")
+
+        // New credentials clear the block.
+        t.on("/login.cgi", Fixtures.loginOk)
+        t.on("/html/bbsp/common/get_wan_list_pppwanstat.asp", Fixtures.pppStats(sent: "1", received: "2"))
+        await client.update(credentials: .init(host: creds.host, username: "root", password: "new"))
+        _ = try? await client.pollTraffic()
+        XCTAssertEqual(t.paths().filter { $0 == "/login.cgi" }.count, 2)
+    }
+
+    func testExpiredSessionLogsInOnceAndRetries() async throws {
+        let t = router()
+        t.on("/html/bbsp/common/get_wan_list_pppwanstat.asp",
+             Fixtures.pppStats(sent: "1000", received: "2000"),
+             Fixtures.loginPage,
+             Fixtures.pppStats(sent: "1000", received: "2000"))
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+        _ = try await client.pollTraffic()
+        _ = try await client.pollTraffic()
+        XCTAssertEqual(t.paths().filter { $0 == "/login.cgi" }.count, 2)
+    }
+
+    func testTrafficSpeedFromCounterDelta() async throws {
+        let t = router()
+        t.on("/html/bbsp/common/get_wan_list_pppwanstat.asp",
+             Fixtures.pppStats(sent: "1000", received: "0"),
+             Fixtures.pppStats(sent: "251000", received: "2500000"))
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+        let start = Date()
+        let first = try await client.pollTraffic(now: start)
+        XCTAssertEqual(first.downloadMbps, 0)
+        let second = try await client.pollTraffic(now: start.addingTimeInterval(2))
+        XCTAssertEqual(second.downloadMbps, 10, accuracy: 0.0001)   // 2.5 MB in 2 s
+        XCTAssertEqual(second.uploadMbps, 1, accuracy: 0.0001)      // 250 kB in 2 s
+        XCTAssertEqual(second.history.count, 1)
+    }
+
+    func testRebootAndLogoutUseFreshToken() async throws {
+        let t = router()
+        t.on("/CustomApp/set.cgi", "")
+        t.on("/logout.cgi", "")
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+        try await client.reboot()
+        let reboot = t.requests.first { $0.path.hasPrefix("/CustomApp/set.cgi") }!
+        XCTAssertTrue(reboot.path.contains("X_HW_DEBUG.SMP.DM.ResetBoard"))
+        XCTAssertEqual(reboot.form.first?.0, "x.X_HW_Token")
+
+        try await client.login()
+        await client.logout()
+        XCTAssertTrue(t.paths().contains("/logout.cgi"))
+    }
+}

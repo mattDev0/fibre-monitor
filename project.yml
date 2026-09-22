@@ -1,0 +1,44 @@
+name: FibreMonitor
+options:
+  bundleIdPrefix: dev.mattdev0
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    GENERATE_INFOPLIST_FILE: false
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: "1.0.0"
+    CODE_SIGN_IDENTITY: ""
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "NO"
+
+targets:
+  FibreMonitor:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: FibreMonitor
+    # No `info:` block: XcodeGen would regenerate Info.plist from defaults and drop
+    # the launch screen key (the app then runs letterboxed) and the network settings.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.mattdev0.fibremonitor
+        INFOPLIST_FILE: FibreMonitor/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1"
+
+  FibreMonitorTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: FibreMonitorTests
+    dependencies:
+      - target: FibreMonitor
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.mattdev0.fibremonitor.tests
