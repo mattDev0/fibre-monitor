@@ -11,6 +11,14 @@ public final class MonitorViewModel: ObservableObject {
     @Published public private(set) var wifi = WifiState()
     @Published public private(set) var lan = LanInfo()
     @Published public private(set) var isWifiSaving = false
+
+    public enum DiagnosticMode: String, CaseIterable { case ping = "Ping", traceroute = "Traceroute" }
+    @Published public var diagnosticMode: DiagnosticMode = .ping
+    @Published public var diagnosticHost = "8.8.8.8"
+    @Published public var pingCount = 4
+    @Published public private(set) var diagnosticOutput = DiagnosticOutput()
+    @Published public private(set) var isDiagnosing = false
+    private var diagnosticTask: Task<Void, Never>?
     @Published public private(set) var isConnected = false
     @Published public private(set) var isRefreshing = false
     @Published public private(set) var lastUpdate: Date?
@@ -127,6 +135,59 @@ public final class MonitorViewModel: ObservableObject {
         } catch {
             actionMessage = Self.describe(error)
             if let w = try? await client.fetchWifi() { wifi = w }
+        }
+    }
+
+    // MARK: Diagnostics
+
+    public func startDiagnostic() {
+        guard !isDiagnosing else { return }
+        let mode = diagnosticMode, host = diagnosticHost, count = pingCount
+        isDiagnosing = true
+        diagnosticOutput = DiagnosticOutput(text: "Starting \(mode.rawValue.lowercased()) to \(host)…\n")
+        diagnosticTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.isDiagnosing = false }
+            do {
+                if mode == .ping {
+                    try await self.client.startPing(host: host, count: count)
+                } else {
+                    try await self.client.startTrace(host: host)
+                }
+                // Ping takes about a second per reply; traceroute up to 30 hops can take a couple of minutes.
+                let deadline = Date().addingTimeInterval(mode == .ping ? Double(count) * 11 + 10 : 180)
+                while !Task.isCancelled && Date() < deadline {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    let out = mode == .ping ? try await self.client.pingOutput() : try await self.client.traceOutput()
+                    if !out.text.isEmpty || out.isFinished { self.diagnosticOutput = out }
+                    if out.isFinished { return }
+                }
+                if !Task.isCancelled {
+                    self.diagnosticOutput.status = "Stopped waiting for the router"
+                }
+            } catch is CancellationError {
+            } catch {
+                self.diagnosticOutput = DiagnosticOutput(text: Self.describe(error), status: "Error")
+            }
+        }
+    }
+
+    /// Stops following the output; the router finishes the test on its own.
+    public func stopDiagnostic() {
+        diagnosticTask?.cancel()
+        diagnosticTask = nil
+        isDiagnosing = false
+        if diagnosticOutput.status == nil { diagnosticOutput.status = "Stopped" }
+    }
+
+    // MARK: Devices
+
+    public func removeDevice(_ device: OntDevice) async {
+        do {
+            devices = try await client.deleteDevice(device)
+            actionMessage = "Removed \(name(for: device)) from the device list."
+        } catch {
+            actionMessage = Self.describe(error)
         }
     }
 

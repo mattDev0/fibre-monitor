@@ -175,7 +175,65 @@ public actor HuaweiOntClient {
     public func fetchWan() async throws -> WanInfo {
         let token = try await freshTokenLoggingIn()
         let text = try await fetch(.init(.post, "/html/bbsp/common/getwanlist.asp", form: [("x.X_HW_Token", token)]))
-        return Self.parseWan(text)
+        let wan = Self.parseWan(text)
+        if !wan.domain.isEmpty { wanDomain = wan.domain }
+        return wan
+    }
+
+    /// Internet WAN used as the source interface for ping and traceroute.
+    private var wanDomain: String?
+
+    // MARK: Diagnostics (router-side ping / traceroute)
+
+    private static let diagnosePage = "RequestFile=html/bbsp/maintenance/diagnosecommon.asp"
+
+    static func isValidHost(_ host: String) -> Bool {
+        let h = host.trimmingCharacters(in: .whitespaces)
+        guard !h.isEmpty, h.count <= 253 else { return false }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:")
+        return h.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    private func diagnosticInterface() async throws -> String {
+        if let d = wanDomain { return d }
+        let wan = try await fetchWan()
+        guard !wan.domain.isEmpty else { throw OntError.badResponse("internet connection") }
+        return wan.domain
+    }
+
+    /// Starts a ping from the router, like the Diagnostics page. Read progress with `pingOutput()`.
+    public func startPing(host: String, count: Int = 4) async throws {
+        let h = host.trimmingCharacters(in: .whitespaces)
+        guard Self.isValidHost(h) else { throw OntError.invalidHost }
+        let interface = try await diagnosticInterface()
+        let token = try await freshTokenLoggingIn()
+        _ = try await transport.send(.init(.post,
+            "/html/bbsp/maintenance/complex.cgi?x=InternetGatewayDevice.IPPingDiagnostics&RUNSTATE_FLAG=Ping&\(Self.diagnosePage)",
+            form: [("x.Host", h), ("x.DiagnosticsState", "Requested"), ("x.NumberOfRepetitions", String(min(max(count, 1), 50))),
+                   ("x.DSCP", "0"), ("x.DataBlockSize", "56"), ("x.Timeout", "10000"), ("x.Interface", interface),
+                   ("RUNSTATE_FLAG.value", "START"), ("x.X_HW_Token", token)],
+            ajax: false), host: credentials.host)
+    }
+
+    public func pingOutput() async throws -> DiagnosticOutput {
+        DiagnosticOutput.parse(try await fetch(.init(.post, "/html/bbsp/maintenance/GetPingResult.asp")))
+    }
+
+    /// Starts a traceroute from the router. Read progress with `traceOutput()`.
+    public func startTrace(host: String) async throws {
+        let h = host.trimmingCharacters(in: .whitespaces)
+        guard Self.isValidHost(h) else { throw OntError.invalidHost }
+        let interface = try await diagnosticInterface()
+        let token = try await freshTokenLoggingIn()
+        _ = try await transport.send(.init(.post,
+            "/html/bbsp/maintenance/complex.cgi?x=InternetGatewayDevice.TraceRouteDiagnostics&RUNSTATE_FLAG=Traceroute&\(Self.diagnosePage)",
+            form: [("x.Interface", interface), ("x.X_HW_ProtocolType", "0"), ("x.DiagnosticsState", "Requested"),
+                   ("x.Host", h), ("x.DataBlockSize", "38"), ("RUNSTATE_FLAG.value", "START"), ("x.X_HW_Token", token)],
+            ajax: false), host: credentials.host)
+    }
+
+    public func traceOutput() async throws -> DiagnosticOutput {
+        DiagnosticOutput.parse(try await fetch(.init(.post, "/html/bbsp/maintenance/GetRouteResult.asp")))
     }
 
     static func parseWan(_ text: String) -> WanInfo {
@@ -187,6 +245,7 @@ public actor HuaweiOntClient {
         guard let best = ranked.first else { return WanInfo() }
         let (r, type) = best
         var wan = WanInfo()
+        wan.domain = r["domain"] ?? ""
         wan.name = r["Name"] ?? ""
         wan.connectionStatus = r["ConnectionStatus"] ?? r["Status"] ?? ""
         wan.connectionType = type
@@ -281,6 +340,23 @@ public actor HuaweiOntClient {
 
     /// SSID index -> "2.4GHz"/"5GHz" from the router's Wi-Fi list; learned by `fetchWifi()`.
     private var ssidBands: [Int: String] = [:]
+
+    /// Removes an offline device from the router's list, like the device page's Delete button
+    /// (which the router only offers for offline devices). Returns the refreshed list.
+    public func deleteDevice(_ device: OntDevice) async throws -> [OntDevice] {
+        guard !device.isOnline else { throw OntError.deviceOnline }
+        guard device.domain.hasPrefix("InternetGatewayDevice.LANDevice.1.X_HW_UserDev.") else {
+            throw OntError.badResponse("device record")
+        }
+        let token = try await freshTokenLoggingIn()
+        _ = try await transport.send(.init(.post,
+            "/html/bbsp/userdevinfo/del.cgi?x=InternetGatewayDevice.LANDevice.1.X_HW_UserDev"
+                + "&RequestFile=html/bbsp/userdevinfo/userdevinfosmart.asp",
+            form: [(device.domain, ""), ("x.X_HW_Token", token)]), host: credentials.host)
+        let after = try await fetchDevices()
+        guard !after.contains(where: { $0.mac == device.mac }) else { throw OntError.notConfirmed }
+        return after
+    }
 
     // MARK: Router health
 
@@ -394,6 +470,7 @@ public actor HuaweiOntClient {
             let mac = (r["MacAddr"] ?? "").lowercased()
             guard !mac.isEmpty, seen.insert(mac).inserted else { continue }
             devices.append(OntDevice(
+                domain: r["Domain"] ?? "",
                 mac: mac,
                 ip: r["IpAddr"] ?? "",
                 hostName: r["HostName"] ?? "",

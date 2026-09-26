@@ -5,6 +5,7 @@ struct DevicesCard: View {
     @State private var showOffline = false
     @State private var renaming: OntDevice?
     @State private var newName = ""
+    @State private var removing: OntDevice?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -26,6 +27,17 @@ struct DevicesCard: View {
                     DeviceRow(device: device, name: viewModel.name(for: device))
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    Button {
+                        newName = viewModel.settings.alias(for: device.mac) ?? ""
+                        renaming = device
+                    } label: { Label("Rename", systemImage: "pencil") }
+                    if !device.isOnline {
+                        Button(role: .destructive) { removing = device } label: {
+                            Label("Remove from list", systemImage: "trash")
+                        }
+                    }
+                }
             }
 
             let offlineCount = viewModel.devices.count - viewModel.onlineDevices.count
@@ -38,6 +50,16 @@ struct DevicesCard: View {
             }
         }
         .liquidGlassCard()
+        .confirmationDialog(removing.map { "Remove \(viewModel.name(for: $0))?" } ?? "",
+                            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
+                            titleVisibility: .visible) {
+            Button("Remove from list", role: .destructive) {
+                if let d = removing { Task { await viewModel.removeDevice(d) } }
+                removing = nil
+            }
+        } message: {
+            Text("This only clears the offline device from the router's list. If it connects again it will reappear.")
+        }
         .alert("Rename device", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newName)
             Button("Cancel", role: .cancel) { renaming = nil }

@@ -15,6 +15,8 @@ public struct TrafficState: Equatable, Sendable {
 }
 
 public struct WanInfo: Equatable, Sendable {
+    /// TR-069 path of the connection, e.g. InternetGatewayDevice.WANDevice.1...WANPPPConnection.1
+    public var domain: String = ""
     public var name: String = ""
     public var connectionStatus: String = ""
     public var connectionType: String = ""   // "PPPoE" or "IPoE"
@@ -119,6 +121,8 @@ public enum ConnectionPort: Equatable, Sendable {
 
 public struct OntDevice: Identifiable, Equatable, Sendable {
     public var id: String { mac }
+    /// Router record, e.g. InternetGatewayDevice.LANDevice.1.X_HW_UserDev.14 (used to delete it).
+    public var domain: String = ""
     public var mac: String
     public var ip: String
     public var hostName: String
@@ -157,6 +161,8 @@ public enum OntError: LocalizedError, Equatable {
     case badResponse(String)
     case lastRadio
     case notConfirmed
+    case deviceOnline
+    case invalidHost
 
     public var errorDescription: String? {
         switch self {
@@ -170,6 +176,10 @@ public enum OntError: LocalizedError, Equatable {
             return "Unexpected response from the router (\(what))."
         case .lastRadio:
             return "That's the only Wi-Fi band that's on. Turning it off would disconnect every Wi-Fi device, including this iPhone."
+        case .deviceOnline:
+            return "Only offline devices can be removed from the list, the same as on the router's page."
+        case .invalidHost:
+            return "Enter a host name or IP address, e.g. 8.8.8.8 or google.com."
         case .notConfirmed:
             return "Sent, but the router hasn't confirmed the change yet. If this iPhone was on that band, reconnect to Wi-Fi and refresh."
         }
@@ -218,4 +228,25 @@ public struct LanInfo: Equatable, Sendable {
     public var leaseSeconds: Int = 0
     /// Empty means devices are told to use the router itself, which forwards to the ISP's DNS.
     public var dnsServers: [String] = []
+}
+
+/// Output of a router-side ping or traceroute.
+public struct DiagnosticOutput: Equatable, Sendable {
+    public var text: String = ""
+    /// Status after the router's `[@#@]` end marker, e.g. "Complete"; nil while still running.
+    public var status: String?
+    public var isFinished: Bool { status != nil }
+
+    public init(text: String = "", status: String? = nil) {
+        self.text = text
+        self.status = status
+    }
+
+    /// Splits the router's output at its `[@#@]` end marker.
+    public static func parse(_ raw: String) -> DiagnosticOutput {
+        let joined = HuaweiJs.concatenatedStrings(in: raw)
+        guard let r = joined.range(of: "[@#@]") else { return DiagnosticOutput(text: joined, status: nil) }
+        let status = joined[r.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        return DiagnosticOutput(text: String(joined[..<r.lowerBound]), status: status.isEmpty ? "Complete" : status)
+    }
 }

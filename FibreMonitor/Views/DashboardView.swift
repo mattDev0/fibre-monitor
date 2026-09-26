@@ -23,6 +23,7 @@ public struct DashboardView: View {
                     InternetCard(wan: viewModel.wan)
                     WifiCard(viewModel: viewModel)
                     DevicesCard(viewModel: viewModel)
+                    DiagnosticsCard(viewModel: viewModel)
                     HealthCard(health: viewModel.health)
                     LanCard(lan: viewModel.lan)
                 }

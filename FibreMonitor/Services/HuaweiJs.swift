@@ -126,4 +126,28 @@ public enum HuaweiJs {
               let r = Range(m.range(at: 2), in: text) else { return nil }
         return unescape(text[r])
     }
+
+    /// Joins every string literal in the text, e.g. `"line 1\n" + "line 2\n"` -> "line 1\nline 2\n".
+    /// The diagnostics pages return their output this way.
+    public static func concatenatedStrings(in text: String) -> String {
+        var out = ""
+        var i = text.startIndex
+        while i < text.endIndex {
+            let c = text[i]
+            if c == "\"" || c == "'" {
+                var j = text.index(after: i)
+                let start = j
+                while j < text.endIndex, text[j] != c {
+                    if text[j] == "\\" { j = text.index(after: j) }
+                    if j < text.endIndex { j = text.index(after: j) }
+                }
+                out += unescape(text[start..<min(j, text.endIndex)])
+                i = j < text.endIndex ? text.index(after: j) : j
+            } else {
+                i = text.index(after: i)
+            }
+        }
+        return out
+    }
+
 }

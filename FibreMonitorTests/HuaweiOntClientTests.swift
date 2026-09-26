@@ -287,3 +287,94 @@ final class RouterPagesTests: XCTestCase {
     }
 }
 
+final class DiagnosticsAndDeleteTests: XCTestCase {
+    private let creds = HuaweiOntClient.Credentials(host: "192.168.100.1", username: "root", password: "pw")
+
+    private func router() -> FakeTransport {
+        let t = FakeTransport()
+        t.on("/asp/GetRandCount.asp", Fixtures.token)
+        t.on("/login.cgi", Fixtures.loginOk)
+        t.on("/index.asp", "<html></html>")
+        t.on("/html/ssmp/common/GetRandToken.asp", Fixtures.token)
+        t.on("/html/bbsp/common/getwanlist.asp", Fixtures.wanList)
+        t.on("/html/bbsp/maintenance/complex.cgi", "<html>diagnose page</html>")
+        return t
+    }
+
+    func testPingOutputFormats() {
+        let running = DiagnosticOutput.parse(#"function() {\n  return "PING 8.8.8.8 (8.8.8.8): 56 data bytes\n" + "64 bytes from 8.8.8.8: seq=0 ttl=112 time=15.6 ms\n";\n}"#)
+        XCTAssertFalse(running.isFinished)
+        XCTAssertTrue(running.text.contains("seq=0"))
+
+        let done = DiagnosticOutput.parse(#"function() {\n  return "PING 8.8.8.8\n" + "--- 8.8.8.8 ping statistics ---\n" + "4 packets transmitted, 4 packets received, 0% packet loss\n" + "[@#@]Complete";\n}"#)
+        XCTAssertEqual(done.status, "Complete")
+        XCTAssertTrue(done.text.hasSuffix("0% packet loss\n"))
+        XCTAssertFalse(done.text.contains("[@#@]"))
+
+        let trace = DiagnosticOutput.parse(#""traceroute to 96.0.47.217, 30 hops max\n" + " 1  *  *  *\n" + "[@#@]Error_MaxHopCountExceeded";"#)
+        XCTAssertEqual(trace.status, "Error_MaxHopCountExceeded")
+        XCTAssertTrue(trace.text.hasPrefix("traceroute to 96.0.47.217"))
+    }
+
+    func testStartPingPostsDiagnosticsFormOnTheWanInterface() async throws {
+        let t = router()
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+        try await client.startPing(host: " 8.8.8.8 ", count: 4)
+        let req = t.requests.first { $0.path.hasPrefix("/html/bbsp/maintenance/complex.cgi") }!
+        XCTAssertTrue(req.path.contains("x=InternetGatewayDevice.IPPingDiagnostics"))
+        XCTAssertTrue(req.path.contains("RUNSTATE_FLAG=Ping"))
+        let f = Dictionary(uniqueKeysWithValues: req.form)
+        XCTAssertEqual(f["x.Host"], "8.8.8.8")
+        XCTAssertEqual(f["x.NumberOfRepetitions"], "4")
+        XCTAssertEqual(f["x.DiagnosticsState"], "Requested")
+        XCTAssertEqual(f["x.Interface"], "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1")
+        XCTAssertEqual(f["RUNSTATE_FLAG.value"], "START")
+        XCTAssertEqual(req.form.last?.0, "x.X_HW_Token")
+    }
+
+    func testStartTraceUsesTracerouteDiagnostics() async throws {
+        let t = router()
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+        try await client.startTrace(host: "google.com")
+        let req = t.requests.first { $0.path.hasPrefix("/html/bbsp/maintenance/complex.cgi") }!
+        XCTAssertTrue(req.path.contains("x=InternetGatewayDevice.TraceRouteDiagnostics"))
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: req.form)["x.Host"], "google.com")
+    }
+
+    func testInvalidHostNeverReachesRouter() async {
+        let t = router()
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+        for bad in ["", "8.8.8.8; reboot", "a b"] {
+            do { try await client.startPing(host: bad); XCTFail("accepted \(bad)") } catch {
+                XCTAssertEqual(error as? OntError, .invalidHost)
+            }
+        }
+        XCTAssertFalse(t.paths().contains("/html/bbsp/maintenance/complex.cgi"))
+    }
+
+    func testDeleteOnlyOfflineDevicesAndConfirm() async throws {
+        let t = router()
+        let remaining = Fixtures.devices.replacingOccurrences(of: "X_HW_UserDev.3", with: "X_HW_UserDev.3-gone")
+            .replacingOccurrences(of: "aa\\x3abb\\x3acc\\x3a00\\x3a00\\x3a03", with: "aa\\x3abb\\x3acc\\x3a00\\x3a00\\x3a99")
+        t.on("/html/bbsp/common/GetLanUserDevInfo.asp", Fixtures.devices, remaining)
+        t.on("/html/bbsp/userdevinfo/del.cgi", "")
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+        let devices = try await client.fetchDevices()
+
+        let online = devices.first { $0.isOnline }!
+        do { _ = try await client.deleteDevice(online); XCTFail("deleted an online device") } catch {
+            XCTAssertEqual(error as? OntError, .deviceOnline)
+        }
+
+        let offline = devices.first { !$0.isOnline }!
+        XCTAssertEqual(offline.domain, "InternetGatewayDevice.LANDevice.1.X_HW_UserDev.3")
+        let after = try await client.deleteDevice(offline)
+        XCTAssertFalse(after.contains { $0.mac == offline.mac })
+        let del = t.requests.first { $0.path.hasPrefix("/html/bbsp/userdevinfo/del.cgi") }!
+        XCTAssertTrue(del.path.contains("x=InternetGatewayDevice.LANDevice.1.X_HW_UserDev"))
+        XCTAssertEqual(del.form.first?.0, "InternetGatewayDevice.LANDevice.1.X_HW_UserDev.3")
+        XCTAssertEqual(del.form.first?.1, "")
+        XCTAssertEqual(t.paths().filter { $0 == "/html/bbsp/userdevinfo/del.cgi" }.count, 1)
+    }
+}
+
