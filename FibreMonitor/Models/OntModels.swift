@@ -83,11 +83,16 @@ public enum ConnectionPort: Equatable, Sendable {
     case lan(Int)
     case other(String)
 
-    /// Huawei ports: SSID1-4 are the 2.4 GHz radio, SSID5-8 the 5 GHz one, LAN1-4 Ethernet.
-    public init(raw: String) {
+    /// `ssidBands` (SSID index -> "2.4GHz"/"5GHz", from the router's Wi-Fi list) decides the band.
+    /// Without it, the usual Huawei layout is assumed: SSID1-4 on 2.4 GHz, SSID5-8 on 5 GHz.
+    public init(raw: String, ssidBands: [Int: String] = [:]) {
         let upper = raw.uppercased()
         if upper.hasPrefix("SSID"), let n = Int(upper.dropFirst(4)) {
-            self = n >= 5 ? .wifi5(ssidIndex: n) : .wifi24(ssidIndex: n)
+            if let band = ssidBands[n] {
+                self = band.hasPrefix("5") ? .wifi5(ssidIndex: n) : .wifi24(ssidIndex: n)
+            } else {
+                self = n >= 5 ? .wifi5(ssidIndex: n) : .wifi24(ssidIndex: n)
+            }
         } else if upper.hasPrefix("LAN"), let n = Int(upper.dropFirst(3)) {
             self = .lan(n)
         } else {
@@ -150,6 +155,8 @@ public enum OntError: LocalizedError, Equatable {
     case loginRejected
     case sessionExpired
     case badResponse(String)
+    case lastRadio
+    case notConfirmed
 
     public var errorDescription: String? {
         switch self {
@@ -161,6 +168,54 @@ public enum OntError: LocalizedError, Equatable {
             return "The router ended the session."
         case .badResponse(let what):
             return "Unexpected response from the router (\(what))."
+        case .lastRadio:
+            return "That's the only Wi-Fi band that's on. Turning it off would disconnect every Wi-Fi device, including this iPhone."
+        case .notConfirmed:
+            return "Sent, but the router hasn't confirmed the change yet. If this iPhone was on that band, reconnect to Wi-Fi and refresh."
         }
     }
+}
+
+public struct RouterHealth: Equatable, Sendable {
+    public var cpuPercent: Int?
+    public var memoryPercent: Int?
+    public var uptimeSeconds: Int?
+    public var model: String = ""
+    public var firmware: String = ""
+    public var hardware: String = ""
+}
+
+public struct WifiRadio: Equatable, Sendable, Identifiable {
+    public var id: Int { index }
+    public var index: Int          // 1 = 2.4 GHz, 2 = 5 GHz on this router
+    public var band: String        // "2.4GHz" / "5GHz"
+    public var enabled: Bool
+}
+
+public struct WifiNetwork: Equatable, Sendable, Identifiable {
+    public var id: Int { ssidIndex }
+    public var ssidIndex: Int
+    public var name: String
+    public var band: String
+    public var enabled: Bool
+}
+
+public struct WifiState: Equatable, Sendable {
+    public var radios: [WifiRadio] = []
+    public var networks: [WifiNetwork] = []
+
+    public func networks(on radio: WifiRadio) -> [WifiNetwork] {
+        networks.filter { $0.band == radio.band && $0.enabled }
+    }
+}
+
+public struct LanInfo: Equatable, Sendable {
+    public var routerIp: String = ""
+    public var subnetMask: String = ""
+    public var dhcpEnabled = false
+    public var poolStart: String = ""
+    public var poolEnd: String = ""
+    public var leaseSeconds: Int = 0
+    /// Empty means devices are told to use the router itself, which forwards to the ISP's DNS.
+    public var dnsServers: [String] = []
 }

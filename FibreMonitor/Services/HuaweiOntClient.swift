@@ -82,14 +82,20 @@ public actor HuaweiOntClient {
     }
 
     /// Sends a data request, logging in first if needed and once more if the session expired.
-    private func fetch(_ request: OntRequest) async throws -> String {
+    /// Full HTML pages are checked for `expect` (text the real page always contains), because
+    /// an expired session answers with the login page instead.
+    private func fetch(_ request: OntRequest, expect: String? = nil) async throws -> String {
+        func valid(_ text: String) -> Bool {
+            if let expect { return text.contains(expect) }
+            return HuaweiJs.looksLikeData(text)
+        }
         if !loggedIn { try await login() }
         let first = try await transport.send(request, host: credentials.host)
-        if HuaweiJs.looksLikeData(first) { return first }
+        if valid(first) { return first }
         loggedIn = false
         try await login()
         let second = try await transport.send(request, host: credentials.host)
-        guard HuaweiJs.looksLikeData(second) else { throw OntError.sessionExpired }
+        guard valid(second) else { throw OntError.sessionExpired }
         return second
     }
 
@@ -270,7 +276,109 @@ public actor HuaweiOntClient {
 
     public func fetchDevices() async throws -> [OntDevice] {
         let text = try await fetch(.init(.post, "/html/bbsp/common/GetLanUserDevInfo.asp"))
-        return Self.parseDevices(text)
+        return Self.parseDevices(text, ssidBands: ssidBands)
+    }
+
+    /// SSID index -> "2.4GHz"/"5GHz" from the router's Wi-Fi list; learned by `fetchWifi()`.
+    private var ssidBands: [Int: String] = [:]
+
+    // MARK: Router health
+
+    public func fetchHealth() async throws -> RouterHealth {
+        let text = try await fetch(.init(.get, "/html/ssmp/deviceinfo/deviceinfo.asp", ajax: false), expect: "cpuUsed")
+        return Self.parseHealth(text)
+    }
+
+    static func parseHealth(_ text: String) -> RouterHealth {
+        var h = RouterHealth()
+        h.cpuPercent = Int((HuaweiJs.stringVar("cpuUsed", in: text) ?? "").replacingOccurrences(of: "%", with: ""))
+        h.memoryPercent = Int((HuaweiJs.stringVar("memUsed", in: text) ?? "").replacingOccurrences(of: "%", with: ""))
+        h.uptimeSeconds = Int(HuaweiJs.stringVar("dev_uptime", in: text) ?? "")
+        if let info = HuaweiJs.records(of: "stDeviceInfo", in: text).first {
+            h.model = info["ModelName"] ?? ""
+            h.firmware = info["SoftwareVersion"] ?? ""
+            h.hardware = info["HardwareVersion"] ?? ""
+        }
+        return h
+    }
+
+    // MARK: Wi-Fi
+
+    public func fetchWifi() async throws -> WifiState {
+        let text = try await fetch(.init(.get, "/html/amp/common/wlan_list.asp", ajax: false), expect: "stRadio")
+        let state = Self.parseWifi(text)
+        ssidBands = Dictionary(state.networks.map { ($0.ssidIndex, $0.band) }, uniquingKeysWith: { a, _ in a })
+        return state
+    }
+
+    static func parseWifi(_ text: String) -> WifiState {
+        var state = WifiState()
+        var seen = Set<Int>()
+        for r in HuaweiJs.records(of: "stRadio", in: text, fallbackParams: ["domain", "OperatingFrequencyBand", "Enable"]) {
+            guard let index = Int((r["domain"] ?? "").split(separator: ".").last ?? ""), seen.insert(index).inserted else { continue }
+            state.radios.append(WifiRadio(index: index, band: r["OperatingFrequencyBand"] ?? "", enabled: r["Enable"] == "1"))
+        }
+        let params = ["domain", "name", "ssid", "X_HW_ServiceEnable", "enable", "X_HW_RFBand", "bindenable"]
+        for r in HuaweiJs.records(of: "stWlanInfo", in: text, fallbackParams: params) {
+            // Skip the page's own template record ('domain', 'SSID'+tid, ...).
+            guard let index = Int((r["domain"] ?? "").split(separator: ".").last ?? "") else { continue }
+            state.networks.append(WifiNetwork(ssidIndex: index, name: r["ssid"] ?? "", band: r["X_HW_RFBand"] ?? "",
+                                              enabled: r["enable"] == "1"))
+        }
+        state.radios.sort { $0.index < $1.index }
+        state.networks.sort { $0.ssidIndex < $1.ssidIndex }
+        return state
+    }
+
+    /// Turns a whole radio (2.4 GHz = 1, 5 GHz = 2) on or off, like the Wi-Fi page's switch.
+    /// Refuses to switch off the last radio that is on, which would cut every Wi-Fi device off.
+    public func setRadio(_ index: Int, enabled: Bool) async throws -> WifiState {
+        let before = try await fetchWifi()
+        guard let radio = before.radios.first(where: { $0.index == index }) else { throw OntError.badResponse("Wi-Fi radio") }
+        if radio.enabled == enabled { return before }
+        if !enabled && !before.radios.contains(where: { $0.index != index && $0.enabled }) {
+            throw OntError.lastRadio
+        }
+        let token = try await freshTokenLoggingIn()
+        let flag = enabled ? "1" : "0"
+        _ = try await transport.send(.init(.post,
+            "/html/amp/wlanbasic/set.cgi?x=InternetGatewayDevice.X_HW_DEBUG.AMP.SetWifiCoverEnable"
+                + "&y=InternetGatewayDevice.LANDevice.1.WiFi.Radio.\(index)&RequestFile=html/amp/wlanbasic/WlanBasic.asp",
+            form: [("x.Enable", flag), ("x.RadioInst", String(index)), ("y.Enable", flag), ("x.X_HW_Token", token)],
+            ajax: false), host: credentials.host)
+        // The radio restarts; read back until it reports the new state.
+        for _ in 0..<6 {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if let now = try? await fetchWifi(), now.radios.first(where: { $0.index == index })?.enabled == enabled {
+                return now
+            }
+        }
+        throw OntError.notConfirmed
+    }
+
+    // MARK: LAN
+
+    public func fetchLan() async throws -> LanInfo {
+        let text = try await fetch(.init(.get, "/html/bbsp/dhcpservercfg/dhcp2.asp", ajax: false), expect: "dhcpmainst")
+        return Self.parseLan(text)
+    }
+
+    static func parseLan(_ text: String) -> LanInfo {
+        var lan = LanInfo()
+        if let ip = HuaweiJs.records(of: "stipaddr", in: text).first(where: { ($0["domain"] ?? "").contains("IPInterface.1") })
+            ?? HuaweiJs.records(of: "stipaddr", in: text).first {
+            lan.routerIp = ip["ipaddr"] ?? ""
+            lan.subnetMask = ip["subnetmask"] ?? ""
+        }
+        if let d = HuaweiJs.records(of: "dhcpmainst", in: text).first(where: { ($0["startip"] ?? "").contains(".") }) {
+            lan.dhcpEnabled = d["enable"] == "1"
+            lan.poolStart = d["startip"] ?? ""
+            lan.poolEnd = d["endip"] ?? ""
+            lan.leaseSeconds = Int(d["leasetime"] ?? "") ?? 0
+            let dns = (d["MainDNS"].flatMap { $0.isEmpty ? nil : $0 } ?? d["DNSServers"] ?? "")
+            lan.dnsServers = dns.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        }
+        return lan
     }
 
     static let userDeviceParams = ["Domain", "IpAddr", "MacAddr", "Port", "IpType", "DevType", "DevStatus", "PortType",
@@ -278,7 +386,8 @@ public actor HuaweiOntClient {
                                    "UserSpecifiedDeviceType", "LeaseTimeRemaining", "TrafficSendRate", "TrafficRecvRate"]
 
     /// All known devices, online first, de-duplicated by MAC (the page lists some twice).
-    static func parseDevices(_ text: String) -> [OntDevice] {
+    /// `ssidBands` maps SSID index to band from the Wi-Fi list; without it bands are guessed.
+    static func parseDevices(_ text: String, ssidBands: [Int: String] = [:]) -> [OntDevice] {
         var seen = Set<String>()
         var devices: [OntDevice] = []
         for r in HuaweiJs.records(of: "USERDevice", in: text, fallbackParams: userDeviceParams) {
@@ -290,7 +399,7 @@ public actor HuaweiOntClient {
                 hostName: r["HostName"] ?? "",
                 routerAlias: r["UserDevAlias"] ?? "",
                 dhcpVendor: r["DevType"] ?? "",
-                port: ConnectionPort(raw: r["Port"] ?? ""),
+                port: ConnectionPort(raw: r["Port"] ?? "", ssidBands: ssidBands),
                 isOnline: (r["DevStatus"] ?? "").lowercased() == "online",
                 connectedTime: r["Time"] ?? ""
             ))

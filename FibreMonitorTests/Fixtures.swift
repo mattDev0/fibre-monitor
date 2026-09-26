@@ -69,6 +69,51 @@ enum Fixtures {
     """
 }
 
+extension Fixtures {
+    static let deviceInfoPage = """
+    <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+    <html><head><script language="JavaScript" type="text/javascript">
+    function stDeviceInfo(domain,SerialNumber,HardwareVersion,SoftwareVersion,ModelName,VendorID,ReleaseTime,Mac,Description,ManufactureInfo,DeviceAlias, WanMac) {
+        this.domain = domain;
+    }
+    var deviceInfos = new Array(new stDeviceInfo("InternetGatewayDevice.DeviceInfo","0000000000000000","1A2B.C","V5R000C00S100","HG8145X6-10","HWTC","2024-01-01_00:00:00 ","00:11:22:33:44:55","OptiXstar HG8145X6-10 GPON Terminal","","",""),null);
+    var cpuUsed = '23%';
+    var memUsed = '61%';
+    if (ProductType == '2') {
+        var dev_uptime = '90061';
+    } else {
+        var dev_uptime = '';
+    }
+    </script></head><body></body></html>
+    """
+
+    static func wlanList(radio1: Bool, radio2: Bool) -> String {
+        """
+        function stWlanInfo(domain,name,ssid,X_HW_ServiceEnable,enable,X_HW_RFBand,bindenable)
+        {
+            this.domain = domain;
+        }
+        function stRadio(domain,OperatingFrequencyBand,Enable)
+        {
+            this.domain = domain;
+        }
+        var WlanInfo = new Array(new stWlanInfo("InternetGatewayDevice.LANDevice.1.WLANConfiguration.1","ath0","Test Home","1","1","2.4GHz"),new stWlanInfo("InternetGatewayDevice.LANDevice.1.WLANConfiguration.2","ath5","Test Fast","1","1","5GHz"),new stWlanInfo("InternetGatewayDevice.LANDevice.1.WLANConfiguration.5","ath4","Test Extra","1","1","5GHz"),null);
+        var RadioList = new Array(new stRadio("InternetGatewayDevice.LANDevice.1.WiFi.Radio.1","2.4GHz","\(radio1 ? 1 : 0)"),new stRadio("InternetGatewayDevice.LANDevice.1.WiFi.Radio.2","5GHz","\(radio2 ? 1 : 0)"),null);
+        var RadioCopy = new Array(new stRadio("InternetGatewayDevice.LANDevice.1.WiFi.Radio.1","2.4GHz","\(radio1 ? 1 : 0)"),null);
+        function newWlan(tid) { return new stWlanInfo('domain','SSID'+tid,'','0','1','','0'); }
+        """
+    }
+
+    static let dhcpPage = """
+    <!DOCTYPE html><html><head><script>
+    function stipaddr(domain, enable, ipaddr, subnetmask) { this.domain = domain; }
+    function dhcpmainst(domain, enable, startip, endip, leasetime, l2relayenable, HGWstartip, HGWendip, STBstartip, STBendip, Camerastartip, Cameraendip, Computerstartip, Computerendip, Phonestartip, Phoneendip, MainDNS, X_HW_Option125Enable, DNSServers, OptionEnable) { this.domain = domain; }
+    var LanIp = new Array(new stipaddr("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.IPInterface.1","1","192\\x2e168\\x2e100\\x2e1","255\\x2e255\\x2e255\\x2e0"),null);
+    var DhcpMain = new Array(new dhcpmainst("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement","1","192\\x2e168\\x2e100\\x2e2","192\\x2e168\\x2e100\\x2e254","86400","1","","","","","","","","","","","","1","",""),null);
+    </script></head></html>
+    """
+}
+
 /// Scripted router: replies by path prefix, records every request.
 final class FakeTransport: OntTransport, @unchecked Sendable {
     private let lock = NSLock()

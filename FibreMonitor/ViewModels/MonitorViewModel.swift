@@ -7,6 +7,10 @@ public final class MonitorViewModel: ObservableObject {
     @Published public private(set) var wan = WanInfo()
     @Published public private(set) var optical = OpticalInfo()
     @Published public private(set) var devices: [OntDevice] = []
+    @Published public private(set) var health = RouterHealth()
+    @Published public private(set) var wifi = WifiState()
+    @Published public private(set) var lan = LanInfo()
+    @Published public private(set) var isWifiSaving = false
     @Published public private(set) var isConnected = false
     @Published public private(set) var isRefreshing = false
     @Published public private(set) var lastUpdate: Date?
@@ -18,6 +22,11 @@ public final class MonitorViewModel: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var lastSlowPoll: Date = .distantPast
     private let slowInterval: TimeInterval = 10
+    // Health, Wi-Fi and LAN come from full web pages (50-130 KB), so poll them rarely.
+    private var lastPagePoll: Date = .distantPast
+    private let pageInterval: TimeInterval = 30
+    private var lastLanPoll: Date = .distantPast
+    private let lanInterval: TimeInterval = 300
 
     public init(settings: SettingsStore = .shared) {
         self.settings = settings
@@ -63,6 +72,8 @@ public final class MonitorViewModel: ObservableObject {
 
     public func refreshAll() async {
         lastSlowPoll = .distantPast
+        lastPagePoll = .distantPast
+        lastLanPoll = .distantPast
         await pollOnce()
     }
 
@@ -85,7 +96,17 @@ public final class MonitorViewModel: ObservableObject {
                 lastSlowPoll = Date()
                 if let w = try? await client.fetchWan() { wan = w }
                 if let o = try? await client.fetchOptical() { optical = o }
+                if Date().timeIntervalSince(lastPagePoll) >= pageInterval {
+                    lastPagePoll = Date()
+                    // Wi-Fi first: it tells the device list which SSID is on which band.
+                    if let w = try? await client.fetchWifi() { wifi = w }
+                    if let h = try? await client.fetchHealth() { health = h }
+                }
                 if let d = try? await client.fetchDevices() { devices = d }
+                if Date().timeIntervalSince(lastLanPoll) >= lanInterval {
+                    lastLanPoll = Date()
+                    if let l = try? await client.fetchLan() { lan = l }
+                }
             }
             isConnected = true
             errorMessage = nil
@@ -94,6 +115,23 @@ public final class MonitorViewModel: ObservableObject {
             isConnected = false
             errorMessage = Self.describe(error)
         }
+    }
+
+    public func setRadio(_ radio: WifiRadio, enabled: Bool) async {
+        guard !isWifiSaving else { return }
+        isWifiSaving = true
+        defer { isWifiSaving = false }
+        do {
+            wifi = try await client.setRadio(radio.index, enabled: enabled)
+            actionMessage = "\(Self.bandName(radio.band)) Wi-Fi turned \(enabled ? "on" : "off"), confirmed by the router."
+        } catch {
+            actionMessage = Self.describe(error)
+            if let w = try? await client.fetchWifi() { wifi = w }
+        }
+    }
+
+    static func bandName(_ band: String) -> String {
+        band.replacingOccurrences(of: "GHz", with: " GHz")
     }
 
     public func reboot() async {

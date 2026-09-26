@@ -197,3 +197,93 @@ final class SessionTests: XCTestCase {
         XCTAssertTrue(t.paths().contains("/logout.cgi"))
     }
 }
+
+final class RouterPagesTests: XCTestCase {
+    private let creds = HuaweiOntClient.Credentials(host: "192.168.100.1", username: "root", password: "pw")
+
+    private func router() -> FakeTransport {
+        let t = FakeTransport()
+        t.on("/asp/GetRandCount.asp", Fixtures.token)
+        t.on("/login.cgi", Fixtures.loginOk)
+        t.on("/index.asp", "<html></html>")
+        t.on("/html/ssmp/common/GetRandToken.asp", Fixtures.token)
+        return t
+    }
+
+    func testHealthParsing() {
+        let h = HuaweiOntClient.parseHealth(Fixtures.deviceInfoPage)
+        XCTAssertEqual(h.cpuPercent, 23)
+        XCTAssertEqual(h.memoryPercent, 61)
+        XCTAssertEqual(h.uptimeSeconds, 90061)
+        XCTAssertEqual(h.model, "HG8145X6-10")
+        XCTAssertEqual(h.firmware, "V5R000C00S100")
+        XCTAssertEqual(h.hardware, "1A2B.C")
+    }
+
+    func testWifiParsingDedupesRadiosAndSkipsTemplate() {
+        let w = HuaweiOntClient.parseWifi(Fixtures.wlanList(radio1: true, radio2: false))
+        XCTAssertEqual(w.radios, [WifiRadio(index: 1, band: "2.4GHz", enabled: true),
+                                  WifiRadio(index: 2, band: "5GHz", enabled: false)])
+        XCTAssertEqual(w.networks.map(\.ssidIndex), [1, 2, 5])
+        XCTAssertEqual(w.networks(on: w.radios[1]).map(\.name), ["Test Fast", "Test Extra"])
+    }
+
+    func testDeviceBandComesFromWifiList() {
+        // SSID2 is a 5 GHz network on this router, which the old SSID1-4 rule got wrong.
+        let text = """
+        function USERDevice(Domain,IpAddr,MacAddr,Port,IpType,DevType,DevStatus,PortType,Time,HostName) { }
+        var l = new Array(new USERDevice("d","192\\x2e168\\x2e100\\x2e9","aa\\x3abb\\x3acc\\x3a00\\x3a00\\x3a09","SSID2","DHCP","","Online","WIFI","0\\x3a5","Phone"),null);
+        """
+        XCTAssertEqual(HuaweiOntClient.parseDevices(text).first?.port, .wifi24(ssidIndex: 2))
+        XCTAssertEqual(HuaweiOntClient.parseDevices(text, ssidBands: [2: "5GHz"]).first?.port, .wifi5(ssidIndex: 2))
+    }
+
+    func testLanParsing() {
+        let lan = HuaweiOntClient.parseLan(Fixtures.dhcpPage)
+        XCTAssertEqual(lan.routerIp, "192.168.100.1")
+        XCTAssertEqual(lan.subnetMask, "255.255.255.0")
+        XCTAssertTrue(lan.dhcpEnabled)
+        XCTAssertEqual(lan.poolStart, "192.168.100.2")
+        XCTAssertEqual(lan.poolEnd, "192.168.100.254")
+        XCTAssertEqual(lan.leaseSeconds, 86400)
+        XCTAssertEqual(lan.dnsServers, [])
+    }
+
+    func testRadioToggleSendsWebFormAndConfirms() async throws {
+        let t = router()
+        t.on("/html/amp/common/wlan_list.asp", Fixtures.wlanList(radio1: true, radio2: true), Fixtures.wlanList(radio1: true, radio2: false))
+        t.on("/html/amp/wlanbasic/set.cgi", "")
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+        let after = try await client.setRadio(2, enabled: false)
+        XCTAssertEqual(after.radios.first { $0.index == 2 }?.enabled, false)
+
+        let set = t.requests.first { $0.path.hasPrefix("/html/amp/wlanbasic/set.cgi") }!
+        XCTAssertTrue(set.path.contains("y=InternetGatewayDevice.LANDevice.1.WiFi.Radio.2"))
+        XCTAssertTrue(set.path.contains("x=InternetGatewayDevice.X_HW_DEBUG.AMP.SetWifiCoverEnable"))
+        XCTAssertEqual(set.form.map { $0.0 }, ["x.Enable", "x.RadioInst", "y.Enable", "x.X_HW_Token"])
+        XCTAssertEqual(set.form.map { $0.1 }.prefix(3), ["0", "2", "0"])
+    }
+
+    func testRefusesToTurnOffTheLastRadio() async {
+        let t = router()
+        t.on("/html/amp/common/wlan_list.asp", Fixtures.wlanList(radio1: false, radio2: true))
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+        do {
+            _ = try await client.setRadio(2, enabled: false)
+            XCTFail("expected refusal")
+        } catch {
+            XCTAssertEqual(error as? OntError, .lastRadio)
+        }
+        XCTAssertFalse(t.paths().contains("/html/amp/wlanbasic/set.cgi"))
+    }
+
+    func testExpiredSessionOnHtmlPageTriggersRelogin() async throws {
+        let t = router()
+        t.on("/html/ssmp/deviceinfo/deviceinfo.asp", Fixtures.loginPage, Fixtures.deviceInfoPage)
+        let client = HuaweiOntClient(credentials: creds, transport: t)
+        let h = try await client.fetchHealth()
+        XCTAssertEqual(h.cpuPercent, 23)
+        XCTAssertEqual(t.paths().filter { $0 == "/login.cgi" }.count, 2)
+    }
+}
+

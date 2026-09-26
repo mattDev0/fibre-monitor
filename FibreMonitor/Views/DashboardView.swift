@@ -21,7 +21,10 @@ public struct DashboardView: View {
                     SpeedSection(traffic: viewModel.traffic)
                     FibreCard(optical: viewModel.optical)
                     InternetCard(wan: viewModel.wan)
+                    WifiCard(viewModel: viewModel)
                     DevicesCard(viewModel: viewModel)
+                    HealthCard(health: viewModel.health)
+                    LanCard(lan: viewModel.lan)
                 }
                 .padding(.horizontal)
                 .padding(.bottom, 24)
