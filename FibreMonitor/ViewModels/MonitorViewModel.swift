@@ -1,5 +1,7 @@
 import Foundation
+import Network
 import SwiftUI
+import UIKit
 
 public enum AppTab: Hashable, Sendable {
     case dashboard, clients, wifi, settings
@@ -32,9 +34,11 @@ public final class MonitorViewModel: ObservableObject {
     @Published public private(set) var isConnectionFailure = false
     @Published public var actionMessage: String?
     @Published public var awaitingRouterSelection: Bool
+    @Published public private(set) var isPhoneOnWifi = true
 
     public let settings: SettingsStore
     private let client: HuaweiOntClient
+    private let pathMonitor = NWPathMonitor()
     private var pollTask: Task<Void, Never>?
     private var lastSlowPoll: Date = .distantPast
     private let slowInterval: TimeInterval = 10
@@ -48,6 +52,17 @@ public final class MonitorViewModel: ObservableObject {
         self.settings = settings
         self.client = HuaweiOntClient(credentials: settings.credentials, transport: transport)
         self.awaitingRouterSelection = settings.profiles.count >= 2
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let onWifi = path.usesInterfaceType(.wifi)
+            Task { @MainActor [weak self] in
+                self?.isPhoneOnWifi = onWifi
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "dev.mattdev0.fibremonitor.netpath", qos: .utility))
+    }
+
+    deinit {
+        pathMonitor.cancel()
     }
 
     public var onlineDevices: [OntDevice] { devices.filter(\.isOnline) }
@@ -255,10 +270,46 @@ public final class MonitorViewModel: ObservableObject {
         defer { isWifiSaving = false }
         do {
             wifi = try await client.setRadio(radio.index, enabled: enabled)
+            Haptics.notify(.success)
             actionMessage = "\(Self.bandName(radio.band)) Wi-Fi turned \(enabled ? "on" : "off"), confirmed by the router."
         } catch {
+            Haptics.notify(.error)
             actionMessage = Self.describe(error, host: settings.host)
             if let w = try? await client.fetchWifi() { wifi = w }
+        }
+    }
+
+    /// Saves a new SSID/passphrase for an editable WPA2-PSK or WPA3-PSK SSID via `#704`.
+    public func updateWifiCredentials(
+        config: WifiSsidConfig,
+        newSsid: String,
+        newPassword: String
+    ) async throws -> WifiUpdateResult {
+        guard !isWifiSaving else { throw OntError.badResponse("Wi-Fi update already in progress") }
+        isWifiSaving = true
+        defer { isWifiSaving = false }
+        do {
+            let result = try await client.updateWifiCredentials(
+                config: config,
+                newSsid: newSsid,
+                newPassword: newPassword
+            )
+            lastPagePoll = Date()
+            if result.connectionDropped {
+                isConnected = false
+                isConnectionFailure = true
+                Haptics.notify(.warning)
+                actionMessage = "Wi-Fi settings were sent. Rejoin \"\(newSsid)\" on this iPhone to reconnect."
+                errorMessage = "Disconnected while saving Wi-Fi settings. Rejoin \"\(newSsid)\" on Wi-Fi to continue monitoring."
+            } else {
+                if let updatedWifi = result.wifi { wifi = updatedWifi }
+                Haptics.notify(.success)
+                actionMessage = "Wi-Fi updated to \"\(newSsid)\". Devices may take a few seconds to reconnect."
+            }
+            return result
+        } catch {
+            Haptics.notify(.error)
+            throw error
         }
     }
 
@@ -306,11 +357,27 @@ public final class MonitorViewModel: ObservableObject {
 
     // MARK: Devices
 
+    public func renameDeviceOnRouter(_ device: OntDevice, alias: String) async throws {
+        do {
+            let trimmed = try HuaweiOntClient.validateDeviceAlias(alias)
+            devices = try await client.renameDevice(device, alias: trimmed)
+            // Clear any phone-only alias override so the new router name displays immediately.
+            settings.setAlias("", for: device.mac)
+            Haptics.notify(.success)
+            actionMessage = "Renamed device on router to \(trimmed)."
+        } catch {
+            Haptics.notify(.error)
+            throw error
+        }
+    }
+
     public func removeDevice(_ device: OntDevice) async {
         do {
             devices = try await client.deleteDevice(device)
+            Haptics.notify(.success)
             actionMessage = "Removed \(name(for: device)) from the device list."
         } catch {
+            Haptics.notify(.error)
             actionMessage = Self.describe(error, host: settings.host)
         }
     }
@@ -322,8 +389,10 @@ public final class MonitorViewModel: ObservableObject {
     public func reboot() async {
         do {
             try await client.reboot()
+            Haptics.notify(.warning)
             actionMessage = "Restart sent. The router will be back in about 2 minutes."
         } catch {
+            Haptics.notify(.error)
             actionMessage = "Restart failed: \(Self.describe(error, host: settings.host))"
         }
     }
@@ -347,5 +416,20 @@ public final class MonitorViewModel: ObservableObject {
             return "Can't reach the router. Make sure this iPhone is on its Wi-Fi."
         }
         return error.localizedDescription
+    }
+}
+
+@MainActor
+public enum Haptics {
+    public static func notify(_ type: UINotificationFeedbackGenerator.FeedbackType) {
+        let generator = UINotificationFeedbackGenerator()
+        generator.prepare()
+        generator.notificationOccurred(type)
+    }
+
+    public static func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
+        let generator = UIImpactFeedbackGenerator(style: style)
+        generator.prepare()
+        generator.impactOccurred()
     }
 }

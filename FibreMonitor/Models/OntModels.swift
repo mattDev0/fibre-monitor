@@ -202,6 +202,11 @@ public enum OntError: LocalizedError, Equatable {
     case notConfirmed
     case deviceOnline
     case invalidHost
+    case invalidDeviceAlias
+    case invalidWifiSsid
+    case invalidWifiPassword
+    case unsupportedWifiSecurity(String)
+    case incompleteWifiConfig([String])
 
     public var errorDescription: String? {
         switch self {
@@ -219,6 +224,16 @@ public enum OntError: LocalizedError, Equatable {
             return "Only offline devices can be removed from the list, the same as on the router's page."
         case .invalidHost:
             return "Enter a host name or IP address, e.g. 8.8.8.8 or google.com."
+        case .invalidDeviceAlias:
+            return "Device name must be 1 to 64 printable characters."
+        case .invalidWifiSsid:
+            return "Network name (SSID) must be 1 to 32 bytes without control characters."
+        case .invalidWifiPassword:
+            return "Wi-Fi password must be 8 to 63 printable ASCII characters."
+        case .unsupportedWifiSecurity(let mode):
+            return "Editing is only supported for WPA2-PSK and WPA3-PSK networks (current: \(mode))."
+        case .incompleteWifiConfig(let fields):
+            return "Cannot edit this Wi-Fi network safely because required settings were missing from WlanBasic.asp: \(fields.joined(separator: ", "))."
         case .notConfirmed:
             return "Sent, but the router hasn't confirmed the change yet. If this iPhone was on that band, reconnect to Wi-Fi and refresh."
         }
@@ -321,6 +336,16 @@ public enum WifiAuthMode: Equatable, Sendable {
         }
     }
 
+    /// Modes supported by the #704 SSID/password edit flow (WPA2-PSK, WPA3-SAE, WPA2/WPA3-PSK).
+    public var isEditableWpa2Or3Psk: Bool {
+        switch self {
+        case .wpa2Psk, .wpa3Psk, .wpa2Wpa3Psk:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Authentication label shown in the UI and QR sheet.
     public var displayName: String {
         switch self {
@@ -385,37 +410,43 @@ public struct WifiSsidConfig: Equatable, Sendable, Identifiable {
     public var wpsConfigMethod: String
     public var wpsPinGenerator: String
     public var wpsDevicePassword: String
+    public var hasWlanWifiRecord: Bool
+    public var hasPskRecord: Bool
+    public var hasWpsRecord: Bool
 
     public init(
         ssidIndex: Int,
         domain: String,
         interfaceName: String = "",
-        enable: String = "1",
+        enable: String = "",
         ssid: String = "",
-        wlHide: String = "1",
-        deviceNum: String = "64",
-        wmmEnable: String = "1",
+        wlHide: String = "",
+        deviceNum: String = "",
+        wmmEnable: String = "",
         beaconType: String = "",
-        basicAuthenticationMode: String = "None",
-        basicEncryptionModes: String = "None",
-        keyIndex: String = "1",
-        encryptionLevel: String = "104-bit",
-        wpaEncryptionModes: String = "TKIPEncryption",
-        wpaAuthenticationMode: String = "PSKAuthentication",
-        ieee11iEncryptionModes: String = "AESEncryption",
-        ieee11iAuthenticationMode: String = "PSKAuthentication",
-        mixEncryptionModes: String = "TKIPandAESEncryption",
-        mixAuthenticationMode: String = "PSKAuthentication",
-        wpaRekey: String = "3600",
+        basicAuthenticationMode: String = "",
+        basicEncryptionModes: String = "",
+        keyIndex: String = "",
+        encryptionLevel: String = "",
+        wpaEncryptionModes: String = "",
+        wpaAuthenticationMode: String = "",
+        ieee11iEncryptionModes: String = "",
+        ieee11iAuthenticationMode: String = "",
+        mixEncryptionModes: String = "",
+        mixAuthenticationMode: String = "",
+        wpaRekey: String = "",
         serviceEnable: String = "1",
         lowerLayers: String = "",
-        standard: String = "11n",
+        standard: String = "",
         psk: String = "",
         isPasswordMasked: Bool = false,
-        wpsEnable: String = "0",
-        wpsConfigMethod: String = "PushButton",
-        wpsPinGenerator: String = "AP",
-        wpsDevicePassword: String = ""
+        wpsEnable: String = "",
+        wpsConfigMethod: String = "",
+        wpsPinGenerator: String = "",
+        wpsDevicePassword: String = "",
+        hasWlanWifiRecord: Bool = false,
+        hasPskRecord: Bool = false,
+        hasWpsRecord: Bool = false
     ) {
         self.ssidIndex = ssidIndex
         self.domain = domain
@@ -446,6 +477,9 @@ public struct WifiSsidConfig: Equatable, Sendable, Identifiable {
         self.wpsConfigMethod = wpsConfigMethod
         self.wpsPinGenerator = wpsPinGenerator
         self.wpsDevicePassword = wpsDevicePassword
+        self.hasWlanWifiRecord = hasWlanWifiRecord
+        self.hasPskRecord = hasPskRecord
+        self.hasWpsRecord = hasWpsRecord
     }
 
     public var isEnabled: Bool {
@@ -454,6 +488,37 @@ public struct WifiSsidConfig: Equatable, Sendable, Identifiable {
 
     public var isHidden: Bool {
         wlHide == "0"
+    }
+
+    /// Required fields parsed live from `WlanBasic.asp` that must be present before `#704` submit.
+    public var missingEditFields: [String] {
+        var missing: [String] = []
+        if !domain.hasPrefix("InternetGatewayDevice.LANDevice.1.WLANConfiguration.") { missing.append("domain") }
+        if enable.isEmpty { missing.append("y.Enable") }
+        if wlHide.isEmpty { missing.append("y.SSIDAdvertisementEnabled") }
+        if deviceNum.isEmpty { missing.append("y.X_HW_AssociateNum") }
+        if wmmEnable.isEmpty { missing.append("w.WMMEnable") }
+        if beaconType.isEmpty { missing.append("y.BeaconType") }
+        if basicAuthenticationMode.isEmpty { missing.append("w.BasicAuthenticationMode") }
+        if keyIndex.isEmpty { missing.append("w.WEPKeyIndex") }
+        if encryptionLevel.isEmpty { missing.append("w.WEPEncryptionLevel") }
+        if wpaRekey.isEmpty { missing.append("y.X_HW_GroupRekey") }
+        if !hasWlanWifiRecord || standard.isEmpty { missing.append("w.Standard") }
+        switch authMode {
+        case .wpa2Psk:
+            if ieee11iAuthenticationMode.isEmpty { missing.append("y.IEEE11iAuthenticationMode") }
+            if ieee11iEncryptionModes.isEmpty { missing.append("y.IEEE11iEncryptionModes") }
+        case .wpa3Psk, .wpa2Wpa3Psk:
+            if mixAuthenticationMode.isEmpty { missing.append("y.X_HW_WPAand11iAuthenticationMode") }
+            if mixEncryptionModes.isEmpty { missing.append("y.X_HW_WPAand11iEncryptionModes") }
+        default:
+            break
+        }
+        if !hasPskRecord || isPasswordMasked || psk.isEmpty { missing.append("PreSharedKey") }
+        if !hasWpsRecord || wpsEnable.isEmpty || wpsConfigMethod.isEmpty || wpsPinGenerator.isEmpty || wpsDevicePassword.isEmpty {
+            missing.append("WPS parameters")
+        }
+        return missing
     }
 
     public var authMode: WifiAuthMode {
@@ -521,6 +586,16 @@ public enum WifiQrPayload {
         }
         guard let password, !password.isEmpty else { return nil }
         return "WIFI:T:\(type);S:\(escapedSsid);P:\(escape(password));\(hiddenPart);"
+    }
+}
+
+public struct WifiUpdateResult: Equatable, Sendable {
+    public var wifi: WifiState?
+    public var connectionDropped: Bool
+
+    public init(wifi: WifiState?, connectionDropped: Bool) {
+        self.wifi = wifi
+        self.connectionDropped = connectionDropped
     }
 }
 

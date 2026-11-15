@@ -200,67 +200,91 @@ private struct ClientDetailSheet: View {
     let device: OntDevice
     @Environment(\.dismiss) private var dismiss
 
+    @State private var showRouterRename = false
     @State private var showLocalRename = false
     @State private var localAliasInput = ""
     @State private var confirmRemove = false
+
+    private var currentDevice: OntDevice {
+        viewModel.devices.first(where: { $0.mac == device.mac }) ?? device
+    }
+
+    private var canRenameOnRouter: Bool {
+        currentDevice.domain.hasPrefix("InternetGatewayDevice.LANDevice.1.X_HW_UserDev.")
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    LabeledContent("Name", value: viewModel.name(for: device))
-                    LabeledContent("Status", value: device.isOnline ? "Online (\(device.connectedText))" : "Offline")
-                    LabeledContent("Connection", value: device.port.label)
-                    if !device.ip.isEmpty {
-                        LabeledContent("IP Address", value: device.ip)
+                    LabeledContent("Name", value: viewModel.name(for: currentDevice))
+                    LabeledContent("Status", value: currentDevice.isOnline ? "Online (\(currentDevice.connectedText))" : "Offline")
+                    LabeledContent("Connection", value: currentDevice.port.label)
+                    if !currentDevice.ip.isEmpty {
+                        LabeledContent("IP Address", value: currentDevice.ip)
                     }
-                    LabeledContent("MAC Address", value: device.mac)
+                    LabeledContent("MAC Address", value: currentDevice.mac)
                 }
 
-                if device.hasTrafficRates {
+                if currentDevice.hasTrafficRates {
                     Section("Live Traffic") {
-                        if let down = device.trafficRecvRate {
+                        if let down = currentDevice.trafficRecvRate {
                             LabeledContent("Download Rate", value: TrafficRateFormatter.string(bytesPerSecond: down))
                         }
-                        if let up = device.trafficSendRate {
+                        if let up = currentDevice.trafficSendRate {
                             LabeledContent("Upload Rate", value: TrafficRateFormatter.string(bytesPerSecond: up))
                         }
                     }
                 }
 
                 Section("Reported Details") {
-                    if !device.routerAlias.isEmpty && device.routerAlias != "--" {
-                        LabeledContent("Router Name", value: device.routerAlias)
+                    if !currentDevice.routerAlias.isEmpty && currentDevice.routerAlias != "--" {
+                        LabeledContent("Router Name", value: currentDevice.routerAlias)
                     }
-                    if !device.hostName.isEmpty && device.hostName != "--" {
-                        LabeledContent("Hostname", value: device.hostName)
+                    if !currentDevice.hostName.isEmpty && currentDevice.hostName != "--" {
+                        LabeledContent("Hostname", value: currentDevice.hostName)
                     }
-                    if !device.dhcpVendor.isEmpty && device.dhcpVendor != "--" {
-                        LabeledContent("DHCP Vendor", value: device.dhcpVendor)
+                    if !currentDevice.dhcpVendor.isEmpty && currentDevice.dhcpVendor != "--" {
+                        LabeledContent("DHCP Vendor", value: currentDevice.dhcpVendor)
                     }
-                    if let lease = device.leaseSecondsRemaining, lease > 0 {
+                    if let lease = currentDevice.leaseSecondsRemaining, lease > 0 {
                         LabeledContent("Lease Remaining", value: InternetCard.uptime(lease))
                     }
                 }
 
                 Section {
                     Button {
-                        localAliasInput = viewModel.settings.alias(for: device.mac) ?? ""
+                        showRouterRename = true
+                    } label: {
+                        Label("Rename on Router", systemImage: "pencil")
+                    }
+                    .disabled(!canRenameOnRouter || !viewModel.isConnected)
+
+                    Button {
+                        localAliasInput = viewModel.settings.alias(for: currentDevice.mac) ?? ""
                         showLocalRename = true
                     } label: {
-                        Label("Rename on This iPhone", systemImage: "iphone.and.arrow.forward")
+                        Label("Rename on This iPhone Only", systemImage: "iphone")
                     }
 
-                    if !device.isOnline {
+                    if !currentDevice.isOnline {
                         Button(role: .destructive) {
                             confirmRemove = true
                         } label: {
                             Label("Remove from Router List", systemImage: "trash")
                         }
                     }
+                } footer: {
+                    if !canRenameOnRouter {
+                        Text("This device record cannot be renamed on the router; use Rename on This iPhone Only.")
+                    } else if !viewModel.isConnected {
+                        Text("Reconnect to the router to save a name on the router.")
+                    } else {
+                        Text("Rename on Router updates the alias stored on the ONT; Rename on This iPhone Only keeps a private label on this device.")
+                    }
                 }
             }
-            .navigationTitle(viewModel.name(for: device))
+            .navigationTitle(viewModel.name(for: currentDevice))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -268,23 +292,27 @@ private struct ClientDetailSheet: View {
                 }
             }
         }
-        .alert("Rename on This iPhone", isPresented: $showLocalRename) {
+        .sheet(isPresented: $showRouterRename) {
+            ClientRouterRenameSheet(viewModel: viewModel, device: currentDevice)
+        }
+        .alert("Rename on This iPhone Only", isPresented: $showLocalRename) {
             TextField("Device name", text: $localAliasInput)
             Button("Cancel", role: .cancel) {}
             Button("Save") {
-                viewModel.settings.setAlias(localAliasInput, for: device.mac)
+                viewModel.settings.setAlias(localAliasInput, for: currentDevice.mac)
+                Haptics.notify(.success)
             }
         } message: {
             Text("Saved locally on this iPhone only. Leave empty to use the router's name.")
         }
         .confirmationDialog(
-            "Remove \(viewModel.name(for: device))?",
+            "Remove \(viewModel.name(for: currentDevice))?",
             isPresented: $confirmRemove,
             titleVisibility: .visible
         ) {
             Button("Remove from List", role: .destructive) {
                 Task {
-                    await viewModel.removeDevice(device)
+                    await viewModel.removeDevice(currentDevice)
                     dismiss()
                 }
             }
@@ -292,6 +320,99 @@ private struct ClientDetailSheet: View {
         } message: {
             Text("This only clears the offline device from the router's list. If it connects again it will reappear.")
         }
+    }
+}
+
+private struct ClientRouterRenameSheet: View {
+    @ObservedObject var viewModel: MonitorViewModel
+    let device: OntDevice
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var aliasInput = ""
+    @State private var isSaving = false
+    @State private var errorText: String?
+
+    private var trimmedInput: String {
+        aliasInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var validationError: String? {
+        do {
+            _ = try HuaweiOntClient.validateDeviceAlias(aliasInput)
+            return nil
+        } catch {
+            return (error as? LocalizedError)?.errorDescription ?? "Invalid device name."
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Device name on router", text: $aliasInput)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("Router Alias")
+                } footer: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(trimmedInput.utf8.count)/64 UTF-8 bytes")
+                            .foregroundColor(trimmedInput.utf8.count > 64 ? .red : .secondary)
+                        if let validationError, !aliasInput.isEmpty {
+                            Text(validationError)
+                                .foregroundColor(.red)
+                        } else {
+                            Text("Updates UserDevAlias on the router and clears any iPhone-only nickname.")
+                        }
+                    }
+                }
+
+                if let errorText {
+                    Section {
+                        Label(errorText, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                            .font(.subheadline)
+                    }
+                }
+            }
+            .navigationTitle("Rename on Router")
+            .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled(isSaving)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isSaving {
+                        ProgressView()
+                    } else {
+                        Button("Save") {
+                            Task { await submit() }
+                        }
+                        .disabled(validationError != nil)
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if aliasInput.isEmpty {
+                let seed = device.routerAlias.isEmpty ? device.displayName : device.routerAlias
+                aliasInput = seed == "Unknown device" ? "" : seed
+            }
+        }
+    }
+
+    private func submit() async {
+        isSaving = true
+        errorText = nil
+        do {
+            try await viewModel.renameDeviceOnRouter(device, alias: aliasInput)
+            dismiss()
+        } catch {
+            errorText = MonitorViewModel.describe(error, host: viewModel.settings.host)
+        }
+        isSaving = false
     }
 }
 

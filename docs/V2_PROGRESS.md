@@ -74,7 +74,7 @@ Every index `0...43` in `HuaweiOntClient.wanPppParams` matches the 44-argument `
 ---
 
 ## Phase 3: UI redesign (Liquid Glass 4-tab layout & Wi-Fi QR)
-**Status:** Implemented and tested against synthetic fixtures (awaiting CI verification).
+**Status:** Verified on CI (`ios-build` run `43761797178` passed all unit tests and device build).
 
 ### What was done
 - Replaced single-screen layout (`FibreMonitor/App/FibreMonitorApp.swift`, `FibreMonitor/Views/MainTabView.swift`) with a 4-tab `TabView` (`Dashboard`, `Clients`, `Wi-Fi`, `Settings`):
@@ -92,11 +92,38 @@ Every index `0...43` in `HuaweiOntClient.wanPppParams` matches the 44-argument `
 
 ---
 
+---
+
+## Phase 4: Additional router writes (#198 Device Rename & #704 Wi-Fi Credential Edit)
+**Status:** Implemented and tested against synthetic fixtures (awaiting CI verification).
+
+### What was done
+- **Router-side device rename (`#198`, `HuaweiOntClient.renameDevice`, `ClientsTabView.swift`):**
+  - Added `HuaweiOntClient.validateDeviceAlias(_:)` enforcing trimmed non-empty aliases between 1 and 64 UTF-8 bytes without control characters (`invalidDeviceAlias`). Note: captured `bbsp_userdevinfo_userdetdevinfo.asp` has no `maxlength` attribute or JS length/character check on `UserDevAlias`; our 1–64 byte printable check is a defensive app-side guard.
+  - Added `HuaweiOntClient.renameDevice(_:alias:)` posting to `/html/bbsp/userdevinfo/set.cgi?x=<domain>&RequestFile=html/bbsp/userdevinfo/userdetdevinfo.asp` with `x.UserDevAlias`, `x.UserSpecifiedDeviceType`, and `x.X_HW_Token`, then re-fetching devices (`#198`).
+  - Updated `ClientDetailSheet` with distinct `"Rename on Router"` (launching `ClientRouterRenameSheet` with live UTF-8 byte count & validation, clearing any iPhone-only nickname override on success) and `"Rename on This iPhone Only"` actions.
+- **Wi-Fi radio toggle disconnect warning (`WifiTabView.swift`, `MonitorViewModel.swift`):**
+  - Added `NWPathMonitor`-backed `isPhoneOnWifi` flag (no Location or Wi-Fi Info entitlement needed) and enhanced the radio-off confirmation alert to warn explicitly that turning off the connected radio disconnects the app immediately.
+- **Wi-Fi SSID & password edit (`#704`, `OntModels.swift`, `HuaweiOntClient.swift`, `WifiTabView.swift`):**
+  - Updated `parseWlanBasic(_:)` to track record presence (`hasWlanWifiRecord`, `hasPskRecord`, `hasWpsRecord`) without capture defaults, and added `WifiSsidConfig.missingEditFields` + `WifiAuthMode.isEditableWpa2Or3Psk`.
+  - Added `HuaweiOntClient.validateWifiCredentials(ssid:password:)` (SSID 1–32 UTF-8 printable bytes; password 8–63 printable ASCII `0x20...0x7E`), `wifiEditRequest(config:newSsid:newPassword:token:)` producing the exact 36-field `#704` payload dynamically from parsed `WlanBasic.asp` fields (modifying only `y.SSID`, `w.SSID`, and `k.PreSharedKey`, and refusing non-WPA2/WPA3-PSK or incomplete/masked configs), and `updateWifiCredentials(...)` returning `WifiUpdateResult(wifi:connectionDropped:)` cleanly when `#704` triggers an expected mid-save Wi-Fi drop.
+  - Added `"Edit"` action in `WifiTabView` opening `WifiEditSheet` (ephemeral fetch, live validation, security/missing-field refusal cards, passphrase reveal toggle, and typed-SSID confirmation sheet warning that devices disconnect and the iPhone must rejoin) wiping state on dismiss and `.background`.
+- **Haptic feedback:** Added `@MainActor public enum Haptics` triggered on router writes (`setRadio`, `updateWifiCredentials`, `renameDeviceOnRouter`, `removeDevice`, `reboot`, local alias save).
+- **Tests (`FibreMonitorTests/Phase4WritesTests.swift`):** Added unit tests covering `#198` validation/request/refetch, `missingEditFields` detection, `#704` exact 36-key order with non-capture values, WPA3 field mapping, refusal of unsupported/masked modes, graceful mid-save connection drop handling, and `MonitorViewModel` write/last-radio behavior.
+
+### Decisions & Capture Notes
+- **`#704` `w.Key` behavior:** In `amp_wlanbasic_WlanBasic.asp`, `AddParaForCover(Form)` populates `w.Key` from the form's existing/active PSK field while `#704` sends the updated passphrase in `k.PreSharedKey`. Per Phase 4 plan, `wifiEditRequest` keeps `w.Key` equal to parsed `config.psk` so only `y.SSID`, `w.SSID`, and `k.PreSharedKey` change; confirm on real EasyMesh / Wi-Fi Cover hardware whether `w.Key` should stay the prior key or match the new password.
+- **`y.` fields for WPA3 / WPA2-WPA3:** Capture `#704` was recorded on `11i` (`.wpa2Psk`) using `y.IEEE11iAuthenticationMode` and `y.IEEE11iEncryptionModes`. For `.wpa3Psk` and `.wpa2Wpa3Psk`, `wifiEditRequest` substitutes `y.X_HW_WPAand11iAuthenticationMode` and `y.X_HW_WPAand11iEncryptionModes` based on `amp_wlanbasic_WlanBasic.asp` `addParameter1`; needs real hardware verification.
+
+---
+
 ## Needs capture / Unverified on GNMTNNCE hardware
 - `POST /html/ssmp/common/getOpticTxRx.asp` (Tx power, optical temperature, voltage, bias) — referenced in `index.asp`, not captured.
 - `GET /html/ssmp/deviceinfo/deviceinfo.asp` (CPU, memory, ONT uptime, serial, firmware) — in menu, not captured.
 - `bbsp/maintenance/diagnosecommon.asp` (`IPPingDiagnostics` / `TraceRouteDiagnostics`) — in menu, not captured.
 - `POST /logout.cgi?RequestFile=html/logout.html` — not captured on GNMTNNCE.
 - `GET /html/amp/wlanbasic/WlanBasic.asp` vs `?2G`/`?5G` behavior when router uses a different firmware variant or `wifiPasswordMask = '1'`.
+- Live hardware verification of `#198` `UserDevAlias` persistence & max length on GNMTNNCE (`bbsp_userdevinfo_userdetdevinfo.asp` had no JS limit).
+- Live hardware verification of `#704` Wi-Fi credential edit (especially `w.Key` under Wi-Fi Cover/EasyMesh and WPA3 `y.X_HW_WPAand11i*` fields).
 - Non-zero `TrafficSendRate` / `TrafficRecvRate` unit confirmation (all devices in `bbsp_common_GetLanUserDevInfo.asp` reported `"0"`).
 - Live `SystemKeychainStore` migration on a physical device.

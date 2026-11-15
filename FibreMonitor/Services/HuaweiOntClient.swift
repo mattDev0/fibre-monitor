@@ -411,6 +411,35 @@ public actor HuaweiOntClient {
         return after
     }
 
+    public static func validateDeviceAlias(_ alias: String) throws -> String {
+        let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 64 else {
+            throw OntError.invalidDeviceAlias
+        }
+        let allPrintable = trimmed.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7F }
+        guard allPrintable else { throw OntError.invalidDeviceAlias }
+        return trimmed
+    }
+
+    /// Renames a device on the router (`#198`), then re-fetches the device list.
+    public func renameDevice(_ device: OntDevice, alias: String) async throws -> [OntDevice] {
+        guard device.domain.hasPrefix("InternetGatewayDevice.LANDevice.1.X_HW_UserDev.") else {
+            throw OntError.badResponse("device record")
+        }
+        let cleanAlias = try Self.validateDeviceAlias(alias)
+        let token = try await freshTokenLoggingIn()
+        let deviceType = device.userSpecifiedDeviceType.isEmpty ? "0" : device.userSpecifiedDeviceType
+        _ = try await transport.send(.init(.post,
+            "/html/bbsp/userdevinfo/set.cgi?x=\(device.domain)&RequestFile=html/bbsp/userdevinfo/userdetdevinfo.asp",
+            form: [
+                ("x.UserDevAlias", cleanAlias),
+                ("x.UserSpecifiedDeviceType", deviceType),
+                ("x.X_HW_Token", token)
+            ],
+            ajax: false), host: credentials.host)
+        return try await fetchDevices()
+    }
+
     // MARK: Router health
 
     private static func looksLikeLoginPage(_ text: String) -> Bool {
@@ -546,37 +575,40 @@ public actor HuaweiOntClient {
             guard let idx = wlanIndex(from: domain), seen.insert(idx).inserted else { continue }
             let psk = pskByIndex[idx] ?? ""
             let masked = passwordMask && psk == "********"
-            let wps = wpsByIndex[idx] ?? [:]
+            let wps = wpsByIndex[idx]
             result.append(WifiSsidConfig(
                 ssidIndex: idx,
                 domain: domain,
                 interfaceName: r["name"] ?? "",
-                enable: r["enable"] ?? "1",
+                enable: r["enable"] ?? "",
                 ssid: r["ssid"] ?? "",
-                wlHide: r["wlHide"] ?? "1",
-                deviceNum: r["DeviceNum"] ?? "64",
-                wmmEnable: r["wmmEnable"] ?? "1",
+                wlHide: r["wlHide"] ?? "",
+                deviceNum: r["DeviceNum"] ?? "",
+                wmmEnable: r["wmmEnable"] ?? "",
                 beaconType: r["BeaconType"] ?? "",
-                basicAuthenticationMode: r["BasicAuthenticationMode"] ?? "None",
-                basicEncryptionModes: r["BasicEncryptionModes"] ?? "None",
-                keyIndex: r["KeyIndex"] ?? "1",
-                encryptionLevel: r["EncryptionLevel"] ?? "104-bit",
-                wpaEncryptionModes: r["WPAEncryptionModes"] ?? "TKIPEncryption",
-                wpaAuthenticationMode: r["WPAAuthenticationMode"] ?? "PSKAuthentication",
-                ieee11iEncryptionModes: r["IEEE11iEncryptionModes"] ?? "AESEncryption",
-                ieee11iAuthenticationMode: r["IEEE11iAuthenticationMode"] ?? "PSKAuthentication",
-                mixEncryptionModes: r["X_HW_WPAand11iEncryptionModes"] ?? "TKIPandAESEncryption",
-                mixAuthenticationMode: r["X_HW_WPAand11iAuthenticationMode"] ?? "PSKAuthentication",
-                wpaRekey: r["WPARekey"] ?? "3600",
+                basicAuthenticationMode: r["BasicAuthenticationMode"] ?? "",
+                basicEncryptionModes: r["BasicEncryptionModes"] ?? "",
+                keyIndex: r["KeyIndex"] ?? "",
+                encryptionLevel: r["EncryptionLevel"] ?? "",
+                wpaEncryptionModes: r["WPAEncryptionModes"] ?? "",
+                wpaAuthenticationMode: r["WPAAuthenticationMode"] ?? "",
+                ieee11iEncryptionModes: r["IEEE11iEncryptionModes"] ?? "",
+                ieee11iAuthenticationMode: r["IEEE11iAuthenticationMode"] ?? "",
+                mixEncryptionModes: r["X_HW_WPAand11iEncryptionModes"] ?? "",
+                mixAuthenticationMode: r["X_HW_WPAand11iAuthenticationMode"] ?? "",
+                wpaRekey: r["WPARekey"] ?? "",
                 serviceEnable: r["X_HW_ServiceEnable"] ?? "1",
                 lowerLayers: r["LowerLayers"] ?? "",
-                standard: modesByIndex[idx] ?? "11n",
+                standard: modesByIndex[idx] ?? "",
                 psk: psk,
                 isPasswordMasked: masked,
-                wpsEnable: wps["Enable"] ?? "0",
-                wpsConfigMethod: wps["X_HW_ConfigMethod"] ?? "PushButton",
-                wpsPinGenerator: wps["X_HW_PinGenerator"] ?? "AP",
-                wpsDevicePassword: wps["DevicePassword"] ?? ""
+                wpsEnable: wps?["Enable"] ?? "",
+                wpsConfigMethod: wps?["X_HW_ConfigMethod"] ?? "",
+                wpsPinGenerator: wps?["X_HW_PinGenerator"] ?? "",
+                wpsDevicePassword: wps?["DevicePassword"] ?? "",
+                hasWlanWifiRecord: modesByIndex[idx] != nil,
+                hasPskRecord: pskByIndex[idx] != nil,
+                hasWpsRecord: wps != nil
             ))
         }
         result.sort { $0.ssidIndex < $1.ssidIndex }
@@ -607,6 +639,124 @@ public actor HuaweiOntClient {
             }
         }
         throw OntError.notConfirmed
+    }
+
+    public static func validateWifiCredentials(ssid: String, password: String) throws {
+        let hasText = !ssid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let ssidBytes = ssid.utf8.count
+        let ssidPrintable = ssid.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7F }
+        guard hasText, ssidBytes >= 1, ssidBytes <= 32, ssidPrintable else {
+            throw OntError.invalidWifiSsid
+        }
+        let pwdAscii = password.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value <= 0x7E }
+        guard password.count >= 8, password.count <= 63, pwdAscii else {
+            throw OntError.invalidWifiPassword
+        }
+    }
+
+    /// Builds the exact `#704` POST request from parsed `WlanBasic.asp` configuration, preserving field order
+    /// and modifying only `y.SSID`, `w.SSID`, and `k.PreSharedKey`.
+    static func wifiEditRequest(
+        config: WifiSsidConfig,
+        newSsid: String,
+        newPassword: String,
+        token: String
+    ) throws -> OntRequest {
+        guard config.authMode.isEditableWpa2Or3Psk else {
+            throw OntError.unsupportedWifiSecurity(config.authMode.displayName)
+        }
+        let missing = config.missingEditFields
+        guard missing.isEmpty else {
+            throw OntError.incompleteWifiConfig(missing)
+        }
+        try validateWifiCredentials(ssid: newSsid, password: newPassword)
+
+        let domain = config.domain
+        let ssidInst = String(config.ssidIndex)
+        let encryptionMode = (config.authMode == .wpa2Psk)
+            ? config.ieee11iEncryptionModes
+            : config.mixEncryptionModes
+        let yAuthField: (String, String) = (config.authMode == .wpa2Psk)
+            ? ("y.IEEE11iAuthenticationMode", config.ieee11iAuthenticationMode)
+            : ("y.X_HW_WPAand11iAuthenticationMode", config.mixAuthenticationMode)
+        let yEncField: (String, String) = (config.authMode == .wpa2Psk)
+            ? ("y.IEEE11iEncryptionModes", config.ieee11iEncryptionModes)
+            : ("y.X_HW_WPAand11iEncryptionModes", config.mixEncryptionModes)
+        let wIeeeAuth = (config.authMode == .wpa2Psk) ? config.ieee11iAuthenticationMode : "EAPAuthentication"
+        let wMixAuth = (config.authMode == .wpa3Psk || config.authMode == .wpa2Wpa3Psk)
+            ? config.mixAuthenticationMode
+            : "EAPAuthentication"
+
+        let path = "/html/amp/wlanbasic/set.cgi"
+            + "?c1=InternetGatewayDevice.X_HW_DEBUG.WLANConfigAction"
+            + "&w=InternetGatewayDevice.X_HW_DEBUG.AMP.WifiCoverSetWlanBasic"
+            + "&y=\(domain)"
+            + "&z=\(domain).WPS"
+            + "&k=\(domain).PreSharedKey.1"
+            + "&c2=InternetGatewayDevice.X_HW_DEBUG.WLANConfigAction"
+            + "&RequestFile=html/amp/wlanbasic/WlanBasic.asp"
+
+        let form: [(String, String)] = [
+            ("y.Enable", config.enable),
+            ("y.SSIDAdvertisementEnabled", config.wlHide),
+            ("y.SSID", newSsid),
+            ("y.X_HW_AssociateNum", config.deviceNum),
+            ("y.BeaconType", config.beaconType),
+            yAuthField,
+            yEncField,
+            ("k.PreSharedKey", newPassword),
+            ("y.X_HW_GroupRekey", config.wpaRekey),
+            ("z.Enable", config.wpsEnable),
+            ("z.X_HW_ConfigMethod", config.wpsConfigMethod),
+            ("z.X_HW_PinGenerator", config.wpsPinGenerator),
+            ("z.DevicePassword", config.wpsDevicePassword),
+            ("w.SsidInst", ssidInst),
+            ("w.SSID", newSsid),
+            ("w.Enable", config.enable),
+            ("w.Standard", config.standard),
+            ("w.BasicAuthenticationMode", config.basicAuthenticationMode),
+            ("w.BasicEncryptionModes", encryptionMode),
+            ("w.WPAAuthenticationMode", "EAPAuthentication"),
+            ("w.WPAEncryptionModes", encryptionMode),
+            ("w.IEEE11iAuthenticationMode", wIeeeAuth),
+            ("w.IEEE11iEncryptionModes", encryptionMode),
+            ("w.MixAuthenticationMode", wMixAuth),
+            ("w.MixEncryptionModes", encryptionMode),
+            ("w.SSIDAdvertisementEnabled", config.wlHide),
+            ("w.WMMEnable", config.wmmEnable),
+            ("w.MaxAssociateNum", config.deviceNum),
+            ("w.BeaconType", config.beaconType),
+            ("w.WEPEncryptionLevel", config.encryptionLevel),
+            ("w.WEPKeyIndex", config.keyIndex),
+            ("w.Key", config.psk),
+            ("c1.ActionType", "0"),
+            ("c2.ActionType", "1"),
+            ("c2.SSIDList", ssidInst),
+            ("x.X_HW_Token", token)
+        ]
+        return OntRequest(.post, path, form: form, ajax: false)
+    }
+
+    /// Saves an SSID name and passphrase (`#704`) and re-reads `wlan_list.asp`, handling expected Wi-Fi drops gracefully.
+    public func updateWifiCredentials(
+        config: WifiSsidConfig,
+        newSsid: String,
+        newPassword: String
+    ) async throws -> WifiUpdateResult {
+        _ = try Self.wifiEditRequest(config: config, newSsid: newSsid, newPassword: newPassword, token: "validate")
+        let token = try await freshTokenLoggingIn()
+        let request = try Self.wifiEditRequest(config: config, newSsid: newSsid, newPassword: newPassword, token: token)
+        do {
+            _ = try await transport.send(request, host: credentials.host)
+        } catch let url as URLError where [.networkConnectionLost, .timedOut, .cannotConnectToHost, .notConnectedToInternet].contains(url.code) {
+            return WifiUpdateResult(wifi: nil, connectionDropped: true)
+        }
+        do {
+            let refreshed = try await fetchWifi()
+            return WifiUpdateResult(wifi: refreshed, connectionDropped: false)
+        } catch {
+            return WifiUpdateResult(wifi: nil, connectionDropped: true)
+        }
     }
 
     // MARK: LAN

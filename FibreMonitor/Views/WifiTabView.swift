@@ -6,6 +6,7 @@ public struct WifiTabView: View {
     @ObservedObject var viewModel: MonitorViewModel
     @State private var pendingRadio: (radio: WifiRadio, enable: Bool)?
     @State private var qrTarget: WifiNetwork?
+    @State private var editTarget: WifiNetwork?
 
     public init(viewModel: MonitorViewModel) {
         self.viewModel = viewModel
@@ -29,9 +30,12 @@ public struct WifiTabView: View {
                                 }
 
                                 ForEach(group.networks) { network in
-                                    WifiNetworkRow(network: network) {
-                                        qrTarget = network
-                                    }
+                                    WifiNetworkRow(
+                                        network: network,
+                                        isEditDisabled: viewModel.isWifiSaving || !viewModel.isConnected,
+                                        openEdit: { editTarget = network },
+                                        openQr: { qrTarget = network }
+                                    )
                                 }
                             }
                             .liquidGlassCard()
@@ -66,14 +70,21 @@ public struct WifiTabView: View {
                 pendingRadio = nil
             }
         } message: {
-            Text(
-                pendingRadio?.enable == false
-                    ? "Devices on this band disconnect and move to the other band if they can. If this iPhone is on it, it will reconnect."
-                    : "The radio takes a few seconds to start."
-            )
+            if let p = pendingRadio, !p.enable {
+                if viewModel.isPhoneOnWifi {
+                    Text("This iPhone is currently on Wi-Fi. Turning off \(MonitorViewModel.bandName(p.radio.band)) will disconnect this app immediately if you're on this band. Devices on this band will disconnect and move to another band if they can.")
+                } else {
+                    Text("Devices on \(MonitorViewModel.bandName(p.radio.band)) will disconnect and move to another band if they can.")
+                }
+            } else {
+                Text("The radio takes a few seconds to start.")
+            }
         }
         .sheet(item: $qrTarget) { network in
             WifiQrSheet(viewModel: viewModel, network: network)
+        }
+        .sheet(item: $editTarget) { network in
+            WifiEditSheet(viewModel: viewModel, network: network)
         }
     }
 
@@ -134,6 +145,8 @@ public struct WifiTabView: View {
 
 private struct WifiNetworkRow: View {
     let network: WifiNetwork
+    let isEditDisabled: Bool
+    let openEdit: () -> Void
     let openQr: () -> Void
 
     var body: some View {
@@ -152,12 +165,22 @@ private struct WifiNetworkRow: View {
 
             Spacer(minLength: 8)
 
-            Button(action: openQr) {
-                Label("QR", systemImage: "qrcode")
-                    .font(.caption.weight(.semibold))
+            HStack(spacing: 8) {
+                Button(action: openEdit) {
+                    Label("Edit", systemImage: "pencil")
+                        .font(.caption.weight(.semibold))
+                }
+                .liquidGlassSmallButton()
+                .disabled(isEditDisabled)
+                .accessibilityLabel("Edit Wi-Fi name and password for \(network.name)")
+
+                Button(action: openQr) {
+                    Label("QR", systemImage: "qrcode")
+                        .font(.caption.weight(.semibold))
+                }
+                .liquidGlassSmallButton()
+                .accessibilityLabel("Show QR code and password for \(network.name)")
             }
-            .liquidGlassSmallButton()
-            .accessibilityLabel("Show QR code and password for \(network.name)")
         }
         .padding(10)
         .liquidGlassPill()
@@ -348,6 +371,331 @@ private struct WifiQrSheet: View {
             errorText = MonitorViewModel.describe(error, host: viewModel.settings.host)
         }
         isLoading = false
+    }
+}
+
+/// Ephemeral editor for WPA2-PSK / WPA3-PSK SSID & passphrase (`#704`).
+/// Refuses edits when security mode is unsupported or required `WlanBasic.asp` fields are missing/masked,
+/// requires typed SSID confirmation before submit, and wipes sensitive state on dismiss/background.
+private struct WifiEditSheet: View {
+    @ObservedObject var viewModel: MonitorViewModel
+    let network: WifiNetwork
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+
+    @State private var config: WifiSsidConfig?
+    @State private var isLoading = false
+    @State private var loadError: String?
+    @State private var ssidInput = ""
+    @State private var passwordInput = ""
+    @State private var showPassword = false
+    @State private var showConfirmSheet = false
+    @State private var isSaving = false
+    @State private var saveErrorText: String?
+
+    private var hasChanges: Bool {
+        guard let config else { return false }
+        return ssidInput != config.ssid || passwordInput != config.psk
+    }
+
+    private var validationError: String? {
+        do {
+            try HuaweiOntClient.validateWifiCredentials(ssid: ssidInput, password: passwordInput)
+            return nil
+        } catch {
+            return (error as? LocalizedError)?.errorDescription ?? "Invalid Wi-Fi settings."
+        }
+    }
+
+    private var canSubmit: Bool {
+        guard let config else { return false }
+        return config.authMode.isEditableWpa2Or3Psk
+            && config.missingEditFields.isEmpty
+            && hasChanges
+            && validationError == nil
+            && !isSaving
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isLoading {
+                    VStack {
+                        Spacer()
+                        ProgressView("Reading Wi-Fi configuration…")
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background { LiquidGlassBackground() }
+                } else if let loadError {
+                    ScrollView {
+                        VStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.largeTitle)
+                                .foregroundColor(.orange)
+                            Text(loadError)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                            Button("Retry") {
+                                Task { await loadConfig() }
+                            }
+                            .liquidGlassActionButton()
+                        }
+                        .frame(maxWidth: .infinity)
+                        .liquidGlassCard()
+                        .padding()
+                    }
+                    .background { LiquidGlassBackground() }
+                } else if let config {
+                    if !config.authMode.isEditableWpa2Or3Psk {
+                        refusalView(
+                            title: "Unsupported Security Mode",
+                            message: "Editing is limited to WPA2-PSK and WPA3-PSK networks. This SSID currently uses \(config.authMode.displayName)."
+                        )
+                    } else if !config.missingEditFields.isEmpty {
+                        refusalView(
+                            title: "Cannot Edit Safely",
+                            message: "Required router settings were missing or masked (\(config.missingEditFields.joined(separator: ", "))), so changing credentials is disabled."
+                        )
+                    } else {
+                        editForm(for: config)
+                    }
+                }
+            }
+            .navigationTitle("Edit Wi-Fi")
+            .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled(isSaving)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if config != nil && config?.authMode.isEditableWpa2Or3Psk == true && config?.missingEditFields.isEmpty == true {
+                        Button("Save") {
+                            saveErrorText = nil
+                            showConfirmSheet = true
+                        }
+                        .disabled(!canSubmit)
+                    }
+                }
+            }
+        }
+        .task { await loadConfig() }
+        .onDisappear { wipeSensitiveState() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background {
+                wipeSensitiveState()
+                dismiss()
+            }
+        }
+        .sheet(isPresented: $showConfirmSheet) {
+            WifiEditConfirmSheet(
+                newSsid: ssidInput,
+                band: network.band,
+                isPhoneOnWifi: viewModel.isPhoneOnWifi,
+                isSaving: isSaving,
+                errorText: saveErrorText
+            ) {
+                await commitSave()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func editForm(for cfg: WifiSsidConfig) -> some View {
+        Form {
+            Section {
+                TextField("Network name (SSID)", text: $ssidInput)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } header: {
+                Text("Network Name (SSID)")
+            } footer: {
+                Text("\(ssidInput.utf8.count)/32 UTF-8 bytes")
+                    .foregroundColor(ssidInput.utf8.count > 32 ? .red : .secondary)
+            }
+
+            Section {
+                HStack(spacing: 8) {
+                    if showPassword {
+                        TextField("Wi-Fi password", text: $passwordInput)
+                            .font(.body.monospaced())
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    } else {
+                        SecureField("Wi-Fi password", text: $passwordInput)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    Button {
+                        showPassword.toggle()
+                    } label: {
+                        Image(systemName: showPassword ? "eye.slash" : "eye")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(showPassword ? "Hide password" : "Reveal password")
+                }
+            } header: {
+                Text("Passphrase")
+            } footer: {
+                Text("8 to 63 printable ASCII characters (\(passwordInput.count)/63). Fetched live and never saved on this iPhone.")
+            }
+
+            if let validationError {
+                Section {
+                    Label(validationError, systemImage: "exclamationmark.circle.fill")
+                        .font(.subheadline)
+                        .foregroundColor(.red)
+                }
+            }
+
+            Section("Network Details") {
+                LabeledContent("Band", value: MonitorViewModel.bandName(network.band))
+                LabeledContent("Security", value: cfg.authMode.displayName)
+                LabeledContent("Hidden", value: cfg.isHidden ? "Yes" : "No")
+            }
+        }
+    }
+
+    private func refusalView(title: String, message: String) -> some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                Image(systemName: "lock.shield")
+                    .font(.largeTitle)
+                    .foregroundColor(.orange)
+                Text(title)
+                    .font(.headline)
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .liquidGlassCard()
+            .padding()
+        }
+        .background { LiquidGlassBackground() }
+    }
+
+    private func loadConfig() async {
+        isLoading = true
+        loadError = nil
+        do {
+            let loaded = try await viewModel.fetchWifiSsidConfig(for: network)
+            config = loaded
+            ssidInput = loaded.ssid
+            passwordInput = loaded.psk
+        } catch {
+            loadError = MonitorViewModel.describe(error, host: viewModel.settings.host)
+        }
+        isLoading = false
+    }
+
+    private func commitSave() async {
+        guard let cfg = config else { return }
+        isSaving = true
+        saveErrorText = nil
+        do {
+            _ = try await viewModel.updateWifiCredentials(
+                config: cfg,
+                newSsid: ssidInput,
+                newPassword: passwordInput
+            )
+            isSaving = false
+            showConfirmSheet = false
+            wipeSensitiveState()
+            dismiss()
+        } catch {
+            isSaving = false
+            saveErrorText = MonitorViewModel.describe(error, host: viewModel.settings.host)
+        }
+    }
+
+    private func wipeSensitiveState() {
+        config = nil
+        passwordInput = ""
+        showPassword = false
+        showConfirmSheet = false
+        saveErrorText = nil
+    }
+}
+
+private struct WifiEditConfirmSheet: View {
+    let newSsid: String
+    let band: String
+    let isPhoneOnWifi: Bool
+    let isSaving: Bool
+    let errorText: String?
+    let onConfirm: () async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var typedSsid = ""
+
+    private var matchesSsid: Bool {
+        typedSsid == newSsid
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("All Devices Will Disconnect", systemImage: "wifi.exclamationmark")
+                            .font(.headline)
+                            .foregroundColor(.orange)
+                        Text(
+                            isPhoneOnWifi
+                                ? "When the router applies these settings, all devices on \(MonitorViewModel.bandName(band)) — including this iPhone — will disconnect immediately. You will need to rejoin \"\(newSsid)\" in Settings → Wi-Fi with the new password."
+                                : "When the router applies these settings, every device on \(MonitorViewModel.bandName(band)) will disconnect and must rejoin \"\(newSsid)\" with the new password."
+                        )
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Section {
+                    TextField("Type \(newSsid)", text: $typedSsid)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("Type the new SSID to confirm")
+                } footer: {
+                    Text("Enter \"\(newSsid)\" exactly to apply the change.")
+                }
+
+                if let errorText {
+                    Section {
+                        Label(errorText, systemImage: "exclamationmark.triangle.fill")
+                            .font(.subheadline)
+                            .foregroundColor(.red)
+                    }
+                }
+            }
+            .navigationTitle("Confirm Wi-Fi Change")
+            .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled(isSaving)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isSaving {
+                        ProgressView()
+                    } else {
+                        Button("Apply") {
+                            Task { await onConfirm() }
+                        }
+                        .disabled(!matchesSsid)
+                    }
+                }
+            }
+        }
     }
 }
 
