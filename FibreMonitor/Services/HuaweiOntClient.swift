@@ -343,7 +343,8 @@ public actor HuaweiOntClient {
         let text = try await fetch(.init(.post, "/html/amp/common/getSmartDiagnoseResult.asp", form: [("x.X_HW_Token", token)]))
         var info = Self.parseSmartDiagnose(text)
         // TX power and temperature, when the firmware exposes them. Optional.
-        if let optic = try? await fetch(.init(.post, "/html/ssmp/common/getOpticTxRx.asp")) {
+        if let optic = try? await transport.send(.init(.post, "/html/ssmp/common/getOpticTxRx.asp"), host: credentials.host),
+           HuaweiJs.looksLikeData(optic) {
             Self.mergeOpticTxRx(optic, into: &info)
         }
         return info
@@ -381,7 +382,13 @@ public actor HuaweiOntClient {
 
     public func fetchDevices() async throws -> [OntDevice] {
         let text = try await fetch(.init(.post, "/html/bbsp/common/GetLanUserDevInfo.asp"))
-        return Self.parseDevices(text, ssidBands: ssidBands)
+        var devices = Self.parseDevices(text, ssidBands: ssidBands)
+        // Optional DHCP lease enrichment; older firmwares or sessions without it still succeed.
+        if let dhcp = try? await transport.send(.init(.post, "/html/bbsp/common/GetLanUserDhcpInfo.asp"), host: credentials.host),
+           HuaweiJs.looksLikeData(dhcp) {
+            devices = Self.enrichDevices(devices, withDhcpInfo: dhcp)
+        }
+        return devices
     }
 
     /// SSID index -> "2.4GHz"/"5GHz" from the router's Wi-Fi list; learned by `fetchWifi()`.
@@ -406,9 +413,25 @@ public actor HuaweiOntClient {
 
     // MARK: Router health
 
+    private static func looksLikeLoginPage(_ text: String) -> Bool {
+        text.contains("login.cgi") || text.contains("txt_Username")
+    }
+
     public func fetchHealth() async throws -> RouterHealth {
-        let text = try await fetch(.init(.get, "/html/ssmp/deviceinfo/deviceinfo.asp", ajax: false), expect: "cpuUsed")
-        return Self.parseHealth(text)
+        if !loggedIn { try await login() }
+        let req = OntRequest(.get, "/html/ssmp/deviceinfo/deviceinfo.asp", ajax: false)
+        let first = try await transport.send(req, host: credentials.host)
+        if first.contains("cpuUsed") || first.contains("stDeviceInfo") {
+            return Self.parseHealth(first)
+        }
+        guard Self.looksLikeLoginPage(first) else { throw OntError.badResponse("deviceinfo") }
+        loggedIn = false
+        try await login()
+        let second = try await transport.send(req, host: credentials.host)
+        guard second.contains("cpuUsed") || second.contains("stDeviceInfo") else {
+            throw OntError.sessionExpired
+        }
+        return Self.parseHealth(second)
     }
 
     static func parseHealth(_ text: String) -> RouterHealth {
@@ -444,8 +467,9 @@ public actor HuaweiOntClient {
         for r in HuaweiJs.records(of: "stWlanInfo", in: text, fallbackParams: params) {
             // Skip the page's own template record ('domain', 'SSID'+tid, ...).
             guard let index = Int((r["domain"] ?? "").split(separator: ".").last ?? "") else { continue }
+            let enabled = r["enable"] == "1" && r["X_HW_ServiceEnable"] != "0"
             state.networks.append(WifiNetwork(ssidIndex: index, name: r["ssid"] ?? "", band: r["X_HW_RFBand"] ?? "",
-                                              enabled: r["enable"] == "1"))
+                                              enabled: enabled))
         }
         state.radios.sort { $0.index < $1.index }
         state.networks.sort { $0.ssidIndex < $1.ssidIndex }
@@ -487,10 +511,15 @@ public actor HuaweiOntClient {
 
     static func parseLan(_ text: String) -> LanInfo {
         var lan = LanInfo()
-        if let ip = HuaweiJs.records(of: "stipaddr", in: text).first(where: { ($0["domain"] ?? "").contains("IPInterface.1") })
-            ?? HuaweiJs.records(of: "stipaddr", in: text).first {
+        let interfaces = HuaweiJs.records(of: "stipaddr", in: text)
+        if let ip = interfaces.first(where: { ($0["domain"] ?? "").contains("IPInterface.1") }) ?? interfaces.first {
             lan.routerIp = ip["ipaddr"] ?? ""
             lan.subnetMask = ip["subnetmask"] ?? ""
+        }
+        if let ip2 = interfaces.first(where: {
+            ($0["domain"] ?? "").contains("IPInterface.2") && $0["enable"] != "0" && !($0["ipaddr"] ?? "").isEmpty
+        }) {
+            lan.secondaryIp = ip2["ipaddr"] ?? ""
         }
         if let d = HuaweiJs.records(of: "dhcpmainst", in: text).first(where: { ($0["startip"] ?? "").contains(".") }) {
             lan.dhcpEnabled = d["enable"] == "1"
@@ -507,29 +536,84 @@ public actor HuaweiOntClient {
                                    "Time", "HostName", "IPv4Enabled", "IPv6Enabled", "DeviceType", "UserDevAlias",
                                    "UserSpecifiedDeviceType", "LeaseTimeRemaining", "TrafficSendRate", "TrafficRecvRate"]
 
+    static let userDeviceNewParams = ["Domain", "IpAddr", "MacAddr", "Port", "IpType", "DevType", "DevStatus", "PortType",
+                                      "Time", "HostName", "IPv4Enabled", "IPv6Enabled", "DeviceType", "UserDevAlias",
+                                      "UserSpecifiedDeviceType", "LeaseTimeRemaining", "RealMacAddr"]
+
+    static let dhcpInfoParams = ["domain", "name", "ip", "mac", "remaintime", "devtype", "interfacetype",
+                                 "AddressSource", "ConnectedTime"]
+
+    private static func cleanPlaceholder(_ raw: String?) -> String {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespaces)
+        return trimmed == "--" ? "" : trimmed
+    }
+
+    private static func parseNonZeroRate(_ raw: String?) -> Int? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespaces),
+              let value = Int(raw), value > 0 else { return nil }
+        return value
+    }
+
     /// All known devices, online first, de-duplicated by MAC (the page lists some twice).
+    /// Supports both 18-arg `USERDevice` (checked first so traffic rates are kept) and 17-arg `USERDeviceNew`.
     /// `ssidBands` maps SSID index to band from the Wi-Fi list; without it bands are guessed.
     static func parseDevices(_ text: String, ssidBands: [Int: String] = [:]) -> [OntDevice] {
         var seen = Set<String>()
         var devices: [OntDevice] = []
-        for r in HuaweiJs.records(of: "USERDevice", in: text, fallbackParams: userDeviceParams) {
-            let mac = (r["MacAddr"] ?? "").lowercased()
+        let candidates = HuaweiJs.records(of: "USERDevice", in: text, fallbackParams: userDeviceParams)
+            + HuaweiJs.records(of: "USERDeviceNew", in: text, fallbackParams: userDeviceNewParams)
+
+        for r in candidates {
+            let primaryMac = cleanPlaceholder(r["MacAddr"]).lowercased()
+            let fallbackMac = cleanPlaceholder(r["RealMacAddr"]).lowercased()
+            let mac = primaryMac.isEmpty ? fallbackMac : primaryMac
             guard !mac.isEmpty, seen.insert(mac).inserted else { continue }
+
+            let rawType = cleanPlaceholder(r["UserSpecifiedDeviceType"])
+            let lease = Int(r["LeaseTimeRemaining"] ?? "").flatMap { $0 > 0 ? $0 : nil }
+
             devices.append(OntDevice(
                 domain: r["Domain"] ?? "",
                 mac: mac,
-                ip: r["IpAddr"] ?? "",
-                hostName: r["HostName"] ?? "",
-                routerAlias: r["UserDevAlias"] ?? "",
-                dhcpVendor: r["DevType"] ?? "",
-                port: ConnectionPort(raw: r["Port"] ?? "", ssidBands: ssidBands),
+                ip: cleanPlaceholder(r["IpAddr"]),
+                hostName: cleanPlaceholder(r["HostName"]),
+                routerAlias: cleanPlaceholder(r["UserDevAlias"]),
+                dhcpVendor: cleanPlaceholder(r["DevType"]),
+                port: ConnectionPort(raw: cleanPlaceholder(r["Port"]), ssidBands: ssidBands),
                 isOnline: (r["DevStatus"] ?? "").lowercased() == "online",
-                connectedTime: r["Time"] ?? ""
+                connectedTime: r["Time"] ?? "",
+                userSpecifiedDeviceType: rawType.isEmpty ? "0" : rawType,
+                trafficSendRate: parseNonZeroRate(r["TrafficSendRate"]),
+                trafficRecvRate: parseNonZeroRate(r["TrafficRecvRate"]),
+                leaseSecondsRemaining: lease
             ))
         }
         return devices.sorted { a, b in
             if a.isOnline != b.isOnline { return a.isOnline }
             return a.ip.localizedStandardCompare(b.ip) == .orderedAscending
+        }
+    }
+
+    /// Enriches parsed devices with hostname, DHCP vendor class, IP, or lease remaining from `GetLanUserDhcpInfo.asp`.
+    static func enrichDevices(_ devices: [OntDevice], withDhcpInfo text: String) -> [OntDevice] {
+        var byMac: [String: [String: String]] = [:]
+        for r in HuaweiJs.records(of: "DHCPInfo", in: text, fallbackParams: dhcpInfoParams) {
+            let mac = cleanPlaceholder(r["mac"]).lowercased()
+            guard !mac.isEmpty, byMac[mac] == nil else { continue }
+            byMac[mac] = r
+        }
+        guard !byMac.isEmpty else { return devices }
+        return devices.map { device in
+            guard let lease = byMac[device.mac] else { return device }
+            var copy = device
+            if copy.hostName.isEmpty { copy.hostName = cleanPlaceholder(lease["name"]) }
+            if copy.dhcpVendor.isEmpty { copy.dhcpVendor = cleanPlaceholder(lease["devtype"]) }
+            if copy.ip.isEmpty { copy.ip = cleanPlaceholder(lease["ip"]) }
+            if copy.leaseSecondsRemaining == nil,
+               let rem = Int(lease["remaintime"] ?? ""), rem > 0 {
+                copy.leaseSecondsRemaining = rem
+            }
+            return copy
         }
     }
 

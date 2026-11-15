@@ -121,7 +121,7 @@ public enum ConnectionPort: Equatable, Sendable {
 
 public struct OntDevice: Identifiable, Equatable, Sendable {
     public var id: String { mac }
-    /// Router record, e.g. InternetGatewayDevice.LANDevice.1.X_HW_UserDev.14 (used to delete it).
+    /// Router record, e.g. InternetGatewayDevice.LANDevice.1.X_HW_UserDev.14 (used to delete or rename it).
     public var domain: String = ""
     public var mac: String
     public var ip: String
@@ -131,6 +131,45 @@ public struct OntDevice: Identifiable, Equatable, Sendable {
     public var port: ConnectionPort
     public var isOnline: Bool
     public var connectedTime: String    // router format "h:m"
+    public var userSpecifiedDeviceType: String = "0"
+    /// Non-zero rate from `USERDevice.TrafficSendRate` / `TrafficRecvRate` (bytes/s on Huawei ONTs; nil when 0 or absent).
+    public var trafficSendRate: Int? = nil
+    public var trafficRecvRate: Int? = nil
+    public var leaseSecondsRemaining: Int? = nil
+
+    public init(
+        domain: String = "",
+        mac: String,
+        ip: String,
+        hostName: String,
+        routerAlias: String,
+        dhcpVendor: String,
+        port: ConnectionPort,
+        isOnline: Bool,
+        connectedTime: String,
+        userSpecifiedDeviceType: String = "0",
+        trafficSendRate: Int? = nil,
+        trafficRecvRate: Int? = nil,
+        leaseSecondsRemaining: Int? = nil
+    ) {
+        self.domain = domain
+        self.mac = mac
+        self.ip = ip
+        self.hostName = hostName
+        self.routerAlias = routerAlias
+        self.dhcpVendor = dhcpVendor
+        self.port = port
+        self.isOnline = isOnline
+        self.connectedTime = connectedTime
+        self.userSpecifiedDeviceType = userSpecifiedDeviceType
+        self.trafficSendRate = trafficSendRate
+        self.trafficRecvRate = trafficRecvRate
+        self.leaseSecondsRemaining = leaseSecondsRemaining
+    }
+
+    public var hasTrafficRates: Bool {
+        trafficSendRate != nil || trafficRecvRate != nil
+    }
 
     /// Best name the router knows, before any local alias.
     public var displayName: String {
@@ -193,6 +232,11 @@ public struct RouterHealth: Equatable, Sendable {
     public var model: String = ""
     public var firmware: String = ""
     public var hardware: String = ""
+
+    public var hasCpuOrMemory: Bool { cpuPercent != nil || memoryPercent != nil }
+    public var hasAnyData: Bool {
+        hasCpuOrMemory || uptimeSeconds != nil || !model.isEmpty || !firmware.isEmpty
+    }
 }
 
 public struct WifiRadio: Equatable, Sendable, Identifiable {
@@ -217,10 +261,15 @@ public struct WifiState: Equatable, Sendable {
     public func networks(on radio: WifiRadio) -> [WifiNetwork] {
         networks.filter { $0.band == radio.band && $0.enabled }
     }
+
+    public func allNetworks(on radio: WifiRadio) -> [WifiNetwork] {
+        networks.filter { $0.band == radio.band }
+    }
 }
 
 public struct LanInfo: Equatable, Sendable {
     public var routerIp: String = ""
+    public var secondaryIp: String = ""
     public var subnetMask: String = ""
     public var dhcpEnabled = false
     public var poolStart: String = ""

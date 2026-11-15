@@ -119,6 +119,93 @@ extension Fixtures {
     var CfgMode ='GNMTNNCE';
     </script></head></html>
     """
+
+    // MARK: GNMTNNCE firmware fixtures (synthetic, matching capture formats)
+
+    static let gnmtnWanList = """
+    function() {
+      var IPWanList = new Array(null);
+      var PPPWanList = new Array(new WanPPP("InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1","0","0","AlwaysOn","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a01","Connected","ERROR\\x5fNONE","","ACS\\x5fHSI","1","","","Connected","IP\\x5fRouted","10\\x2e0\\x2e0\\x2e2","10\\x2e0\\x2e0\\x2e3","1","0","203\\x2e0\\x2e113\\x2e4\\x2c203\\x2e0\\x2e113\\x2e5","user\\x40isp\\x2etest","\\x2a\\x2a\\x2asensitive\\x20data\\x20replaced\\x2a\\x2a\\x2a","AlwaysOn","4294967295","10","4294967295","0","0","TR069\\x5fINTERNET","","0","180","1","1","1","0","Specified","0","1492","bras\\x2dtest\\x2d01","DetectBidirectionally","283901","0","","0"),null);
+      function IPv6AddressInfo(domain, IPAddressStatus, Origin,IPAddress,PreferredTime,ValidTime,ValidTimeRemaining) { this.IPAddress = IPAddress; }
+      var IPv6AddressList = new Array(null);
+      function IPv6WanInfo(domain, Type, ConnectionStatus, L2EncapType, MACAddress, Vlan, Pri, DNSServers, AFTRName, AFTRPeerAddr,DefaultRouterAddress,V6UpTime) { this.Type = Type; }
+      var IPv6WanInfoList = new Array(new IPv6WanInfo("InternetGatewayDevice.WANDevice.1.X_HW_ShowInterface.1","WAN","Connecting","PPPoE","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a01","10","0","","","","","0"),null);
+      return {};
+    }
+    """
+
+    static func gnmtnPppWanStat(sent: String, received: String) -> String {
+        """
+        function() {
+          return new Array(new WaninfoStats("InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.Stats","\(sent)","\(received)","31000","136000","31000","136000","0","0","1","0"),null);
+        }
+        """
+    }
+
+    static let gnmtnIpWanStatEmpty = """
+    function() {
+      return new Array(null);
+    }
+    """
+
+    static let gnmtnSmartDiagnose = """
+    function() {
+      function stLinkStatus(domain, status) { this.domain = domain; this.Status = status; }
+      function pwdBandSecurityStatus(domain, PWD_2G_Security, PWD_5G_Security) { this.domain = domain; }
+      function getResult() {
+          var opticInfo = '\\x2d15\\x2e93';
+          var ontPonMode = 'gpon';
+          var gponStatus = 'O5';
+          var eponStatus = '';
+          var regStatus = '';
+          if (opticInfo == "--" || opticInfo == "") { opticInfo = "nok"; } else { opticInfo = "ok"; }
+          return { opticInfo: opticInfo, regStatus: 'ok' };
+      }
+      return getResult();
+    }
+    """
+
+    static let gnmtnDevices = """
+    function USERDevice(Domain,IpAddr,MacAddr,Port,IpType,DevType,DevStatus,PortType,Time,HostName,IPv4Enabled,IPv6Enabled,DeviceType,UserDevAlias,UserSpecifiedDeviceType,LeaseTimeRemaining,TrafficSendRate,TrafficRecvRate) { this.Domain = Domain; }
+    function USERDeviceNew(Domain, IpAddr, MacAddr, Port, IpType, DevType, DevStatus, PortType, Time, HostName, IPv4Enabled, IPv6Enabled, DeviceType, UserDevAlias, UserSpecifiedDeviceType, LeaseTimeRemaining, RealMacAddr) { this.Domain = Domain; }
+    var UserDevList = new Array(new USERDevice("InternetGatewayDevice.LANDevice.1.X_HW_UserDev.1","192\\x2e168\\x2e100\\x2e10","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a02","SSID1","DHCP","android\\x2ddhcp\\x2d14","Online","WIFI","10\\x3a43","","1","1","0","","0","59531","12500","240000"),new USERDevice("InternetGatewayDevice.LANDevice.1.X_HW_UserDev.2","192\\x2e168\\x2e2\\x2e2","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a03","SSID2","DHCP","MSFT\\x205\\x2e0","Online","WIFI","0\\x3a9","Work\\x2dLaptop","1","1","0","Laptop\\x20Alias","3","85812","0","0"),new USERDevice("InternetGatewayDevice.LANDevice.1.X_HW_UserDev.3","192\\x2e168\\x2e100\\x2e23","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a04","SSID5","DHCP","android\\x2ddhcp\\x2d16","Offline","WIFI","17\\x3a46","Tablet","1","1","0","\\x2d\\x2d","0","19139","0","0"),null);
+    var UserDevinfo = new Array(new USERDeviceNew("InternetGatewayDevice.LANDevice.1.X_HW_UserDev.1","192\\x2e168\\x2e100\\x2e10","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a02","SSID1","DHCP","android\\x2ddhcp\\x2d14","Online","WIFI","10\\x3a43","","1","1","0","","0","59531","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a02"),new USERDeviceNew("InternetGatewayDevice.LANDevice.1.X_HW_UserDev.2","192\\x2e168\\x2e2\\x2e2","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a03","SSID2","DHCP","MSFT\\x205\\x2e0","Online","WIFI","0\\x3a9","Work\\x2dLaptop","1","1","0","Laptop\\x20Alias","3","85812","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a03"),new USERDeviceNew("InternetGatewayDevice.LANDevice.1.X_HW_UserDev.3","192\\x2e168\\x2e100\\x2e23","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a04","SSID5","DHCP","android\\x2ddhcp\\x2d16","Offline","WIFI","17\\x3a46","Tablet","1","1","0","\\x2d\\x2d","0","19139","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a04"),null);
+    """
+
+    static let gnmtnDevicesNewOnly = """
+    function USERDeviceNew(Domain, IpAddr, MacAddr, Port, IpType, DevType, DevStatus, PortType, Time, HostName, IPv4Enabled, IPv6Enabled, DeviceType, UserDevAlias, UserSpecifiedDeviceType, LeaseTimeRemaining, RealMacAddr) { this.Domain = Domain; }
+    var UserDevinfo = new Array(new USERDeviceNew("InternetGatewayDevice.LANDevice.1.X_HW_UserDev.9","192\\x2e168\\x2e100\\x2e50","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a09","LAN1","DHCP","android\\x2ddhcp\\x2d15","Online","ETH","2\\x3a15","Wired\\x2dBox","1","1","0","Media\\x20Box","4","43200","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a09"),null);
+    """
+
+    static let gnmtnDhcpInfo = """
+    function() {
+      function DHCPInfo(domain,name,ip,mac,remaintime,devtype, interfacetype,AddressSource, ConnectedTime) { this.domain = domain; }
+      var UserDhcpinfo = new Array(new DHCPInfo("InternetGatewayDevice.LANDevice.1.Hosts.Host.1","Pixel\\x2dPhone","192\\x2e168\\x2e100\\x2e10","02\\x3a00\\x3a5E\\x3a00\\x3a00\\x3a02","59295","android\\x2ddhcp\\x2d14","802\\x2e11","DHCP","27105"),null);
+      return UserDhcpinfo;
+    }
+    """
+
+    static func gnmtnWlanList(radio1: Bool = true, radio2: Bool = true) -> String {
+        """
+        function stWlanInfo(domain,name,ssid,X_HW_ServiceEnable,enable,X_HW_RFBand,bindenable) { this.domain = domain; }
+        var WlanInfo = new Array(new stWlanInfo("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e1","ath0","TestNet\\x2d2G","1","1","2\\x2e4GHz"),new stWlanInfo("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e2","ath5","TestNet\\x2d5G","1","1","5GHz"),new stWlanInfo("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e5","ath4","TestNet\\x2dExtra","1","1","5GHz"),null)
+        function newWlan(tid) { return new stWlanInfo('domain','SSID'+tid,'','0','1','','0'); }
+        function stRadio(domain,OperatingFrequencyBand,Enable) { this.domain = domain; }
+        function WlanInfoRefresh() {
+            var Radio = new Array(new stRadio("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWiFi\\x2eRadio\\x2e1","2\\x2e4GHz","\(radio1 ? 1 : 0)"),new stRadio("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWiFi\\x2eRadio\\x2e2","5GHz","\(radio2 ? 1 : 0)"),null);
+        }
+        var Radio = new Array(new stRadio("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWiFi\\x2eRadio\\x2e1","2\\x2e4GHz","\(radio1 ? 1 : 0)"),new stRadio("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWiFi\\x2eRadio\\x2e2","5GHz","\(radio2 ? 1 : 0)"),null);
+        """
+    }
+
+    static let gnmtnDhcp2 = """
+    <!DOCTYPE html><html><head><script>
+    function dhcpmainst(domain, enable, startip, endip, leasetime, l2relayenable, HGWstartip, HGWendip, STBstartip, STBendip, Camerastartip, Cameraendip, Computerstartip, Computerendip, Phonestartip, Phoneendip, MainDNS, X_HW_Option125Enable, DNSServers, OptionEnable) { this.domain = domain; }
+    function stipaddr(domain, enable, ipaddr, subnetmask) { this.domain = domain; }
+    var MainDhcpRange = new Array(new dhcpmainst("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement","1","192\\x2e168\\x2e100\\x2e2","192\\x2e168\\x2e100\\x2e254","86400","1","","","","","","","","","","","","1","","0"),null);
+    var LanIpInfos = new Array(new stipaddr("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.IPInterface.1","1","192\\x2e168\\x2e100\\x2e1","255\\x2e255\\x2e255\\x2e0"),new stipaddr("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.IPInterface.2","1","192\\x2e168\\x2e2\\x2e1","255\\x2e255\\x2e255\\x2e0"),null);
+    </script></head></html>
+    """
 }
 
 /// Scripted router: replies by path prefix, records every request.
