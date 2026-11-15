@@ -24,7 +24,7 @@
 ---
 
 ## Phase 2: Parser compatibility with the new firmware (HG8145X6-10, GNMTNNCE)
-**Status:** Implemented and tested against synthetic GNMTNNCE fixtures (awaiting CI verification).
+**Status:** Complete — `ios-build` run `43760300032` passed all unit tests and device build on `v2` (`680ddc9`).
 
 ### What was done
 - Added synthetic GNMTNNCE fixtures in `FibreMonitorTests/Fixtures.swift` matching the exact constructor formats, `\xNN` escaping, and argument layouts from `captures/hg8145x6-gnmtn/`:
@@ -68,5 +68,35 @@ Every index `0...43` in `HuaweiOntClient.wanPppParams` matches the 44-argument `
 - `GET /html/ssmp/deviceinfo/deviceinfo.asp` (CPU, memory, ONT uptime, serial, firmware) — in menu, not captured.
 - `bbsp/maintenance/diagnosecommon.asp` (`IPPingDiagnostics` / `TraceRouteDiagnostics`) — in menu, not captured.
 - `POST /logout.cgi?RequestFile=html/logout.html` — not captured on GNMTNNCE.
+- Non-zero `TrafficSendRate` / `TrafficRecvRate` unit confirmation (all devices in `bbsp_common_GetLanUserDevInfo.asp` reported `"0"`).
+- Live `SystemKeychainStore` migration on a physical device.
+
+---
+
+## Phase 3: UI redesign (Liquid Glass 4-tab layout & Wi-Fi QR)
+**Status:** Implemented and tested against synthetic fixtures (awaiting CI verification).
+
+### What was done
+- Replaced single-screen layout (`FibreMonitor/App/FibreMonitorApp.swift`, `FibreMonitor/Views/MainTabView.swift`) with a 4-tab `TabView` (`Dashboard`, `Clients`, `Wi-Fi`, `Settings`):
+  - **Dashboard (`FibreMonitor/Views/DashboardView.swift`):** Top router status header (profile name, switcher menu for 2+ profiles, detected model, PON registration pill, LIVE/LOGGED OUT dot + last update, Reconnect button when logged out); Optical Rx Power card with single numeric dBm readout, quality badge, and calibrated horizontal range bar matching `OpticalInfo.Quality` zones (`< -27` Bad, `-27 to -24` Weak, `-24 to -8` Good, `> -8` Too strong); live Download/Upload cards + 60s sparkline; conditional 2x2 metrics grid (WAN status/IP/CGNAT, PPPoE/WAN uptime, conditional ONT uptime, conditional Tx laser power / optics temp, tappable Active Devices count); conditional System Load card with CPU/Memory progress bars shown only when `health.hasCpuOrMemory`; soft destructive Restart Fibre Router button with confirmation alert.
+  - **Clients (`FibreMonitor/Views/ClientsTabView.swift`):** Searchable list (`.searchable`) across name, IP, MAC, and vendor, split into Online and collapsible Offline sections with band/port badges and non-zero traffic rates (`TrafficRateFormatter`), plus `ClientDetailSheet` showing full metadata, lease remaining, local iPhone rename, and offline removal with confirmation.
+  - **Wi-Fi (`FibreMonitor/Views/WifiTabView.swift`):** Radio toggles with confirmation alert, SSIDs grouped by band (`2.4 GHz`, `5 GHz`), and on-demand `WifiQrSheet` backed by `CoreImage` QR generation (`WIFI:T:...`) with Share sheet, Reveal/Copy passphrase, and immediate clearing on dismiss or app background.
+  - **Settings (`FibreMonitor/Views/SettingsTabView.swift`):** Inline Phase 1 multi-router profile list (switch, add, edit, reorder, delete), poll interval stepper, navigation links for Diagnostics and Home Network (`LanCard` showing `secondaryIp`), explicit `Log Out of Router` / `Reconnect` action, and About details.
+- Updated `FibreMonitor/Views/LiquidGlass.swift` so pre-iOS 26 surfaces use `.regularMaterial` while iOS 26+ uses system Liquid Glass, and added VoiceOver labels/values and Dynamic Type fonts across `MetricViews.swift`, `DashboardView.swift`, `ClientsTabView.swift`, and `WifiTabView.swift`.
+- Added ephemeral `WlanBasic.asp` parsing (`WifiAuthMode`, `WifiSsidConfig`, `WifiQrPayload`, `HuaweiOntClient.parseWlanBasic(_:)`, `fetchWlanBasic`) in `OntModels.swift` and `HuaweiOntClient.swift` without caching Wi-Fi passphrases in `SettingsStore` or ViewModel state.
+- Added unit tests in `FibreMonitorTests/WlanBasicTests.swift` covering `WlanBasic.asp` parsing, `kppUsedFlag`, password masking, QR payload escaping, ephemeral fetch, and explicit logout.
+
+### Decisions
+- **Unverified GNMTNNCE cards/tiles hidden gracefully:** On GNMTNNCE firmware where `deviceinfo.asp` and `getOpticTxRx.asp` are uncaptured/missing, System Load, ONT Uptime, and Tx Laser Power stay hidden rather than showing placeholder dashes or errors.
+- **Explicit Session Logout:** Added `MonitorViewModel.logoutSession()` (`isLoggedOut` flag) so logging out from Settings stops background polling until the user taps `Reconnect`, pulls to refresh, or switches routers.
+
+---
+
+## Needs capture / Unverified on GNMTNNCE hardware
+- `POST /html/ssmp/common/getOpticTxRx.asp` (Tx power, optical temperature, voltage, bias) — referenced in `index.asp`, not captured.
+- `GET /html/ssmp/deviceinfo/deviceinfo.asp` (CPU, memory, ONT uptime, serial, firmware) — in menu, not captured.
+- `bbsp/maintenance/diagnosecommon.asp` (`IPPingDiagnostics` / `TraceRouteDiagnostics`) — in menu, not captured.
+- `POST /logout.cgi?RequestFile=html/logout.html` — not captured on GNMTNNCE.
+- `GET /html/amp/wlanbasic/WlanBasic.asp` vs `?2G`/`?5G` behavior when router uses a different firmware variant or `wifiPasswordMask = '1'`.
 - Non-zero `TrafficSendRate` / `TrafficRecvRate` unit confirmation (all devices in `bbsp_common_GetLanUserDevInfo.asp` reported `"0"`).
 - Live `SystemKeychainStore` migration on a physical device.

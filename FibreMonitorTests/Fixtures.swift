@@ -206,6 +206,27 @@ extension Fixtures {
     var LanIpInfos = new Array(new stipaddr("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.IPInterface.1","1","192\\x2e168\\x2e100\\x2e1","255\\x2e255\\x2e255\\x2e0"),new stipaddr("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.IPInterface.2","1","192\\x2e168\\x2e2\\x2e1","255\\x2e255\\x2e255\\x2e0"),null);
     </script></head></html>
     """
+
+    static func gnmtnWlanBasic(kppUsed: Bool = false, passwordMask: Bool = false) -> String {
+        let pwd = passwordMask ? "********" : "pass\\x2dword\\x3b1"
+        let kppVal = kppUsed ? "kpp\\x2dsecret\\x2d2" : ""
+        let maskFlag = passwordMask ? "1" : "0"
+        let kppFlag = kppUsed ? "1" : "0"
+        return """
+        <!DOCTYPE html><html><head><script>
+        var wifiPasswordMask='\(maskFlag)';
+        var kppUsedFlag='\(kppFlag)';
+        function stWlan(domain,name,enable,ssid,wlHide,DeviceNum,wmmEnable,BeaconType,BasicEncryptionModes,BasicAuthenticationMode,KeyIndex,EncryptionLevel,WPAEncryptionModes,WPAAuthenticationMode,IEEE11iEncryptionModes,IEEE11iAuthenticationMode,X_HW_WPAand11iEncryptionModes,X_HW_WPAand11iAuthenticationMode,WPARekey,RadiusServer,RadiusPort,RadiusKey,X_HW_ServiceEnable,LowerLayers,X_HW_WAPIEncryptionModes,X_HW_WAPIAuthenticationMode,X_HW_WAPIServer,X_HW_WAPIPort,X_HW_WPSConfigurated,UAPSDEnable,IsolationEnable) { this.domain = domain; }
+        function stPreSharedKey(domain, psk, kpp) { this.domain = domain; }
+        function stWpsPin(domain, X_HW_ConfigMethod, DevicePassword, X_HW_PinGenerator, Enable) { this.domain = domain; }
+        function stWlanWifi(domain,name,enable,ssid,mode,channel,power,Country,AutoChannelEnable,channelWidth) { this.domain = domain; }
+        var WlanWifiArr = new Array(new stWlanWifi("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e1","ath0","1","TestNet\\x2d2G","11ax","0","100","GH","1","1"),new stWlanWifi("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e2","ath5","1","Example\\x2dSSID","11ax","0","100","GH","1","4"),new stWlanWifi("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e5","ath4","1","Guest\\x2d5G","11ax","0","100","GH","1","4"),null);
+        var WlanArr = new Array(new stWlan("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e1","ath0","1","TestNet\\x2d2G","1","64","1","WPAand11i","None","None","1","104\\x2dbit","TKIPEncryption","PSKAuthentication","AESEncryption","PSKAuthentication","TKIPandAESEncryption","PSKAuthentication","3600","192\\x2e168\\x2e0\\x2e100","1812","526BF435","1","InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWiFi\\x2eRadio\\x2e1","SMS4","WAPIPSK","","3810","2","0","0"),new stWlan("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e2","ath5","1","Example\\x2dSSID","1","64","1","11i","None","None","1","104\\x2dbit","TKIPEncryption","PSKAuthentication","TKIPandAESEncryption","PSKAuthentication","TKIPandAESEncryption","PSKAuthentication","3600","","1812","E06ECC67","1","InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWiFi\\x2eRadio\\x2e2","SMS4","WAPIPSK","","3810","2","0","0"),new stWlan("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e5","ath4","1","OpenGuest","0","64","1","Basic","None","None","1","104\\x2dbit","TKIPEncryption","PSKAuthentication","AESEncryption","PSKAuthentication","TKIPandAESEncryption","PSKAuthentication","3600","","1812","E64F76CE","1","InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWiFi\\x2eRadio\\x2e2","SMS4","WAPIPSK","","3810","2","0","0"),null);
+        var wpaPskKey = new Array(new stPreSharedKey("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e1\\x2ePreSharedKey\\x2e1","\(pwd)","\(kppVal)"),new stPreSharedKey("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e2\\x2ePreSharedKey\\x2e1","\(pwd)","\(kppVal)"),new stPreSharedKey("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e5\\x2ePreSharedKey\\x2e1","",""),null);
+        var wpsPinNum = new Array(new stWpsPin("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e1\\x2eWPS","PushButton","4964285","AP","1"),new stWpsPin("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e2\\x2eWPS","Lable","12345670","AP","0"),new stWpsPin("InternetGatewayDevice\\x2eLANDevice\\x2e1\\x2eWLANConfiguration\\x2e5\\x2eWPS","PushButton","54616011","AP","1"),null);
+        </script></head><body><input type="hidden" name="onttoken" id="hwonttoken" value="tok99"></body></html>
+        """
+    }
 }
 
 /// Scripted router: replies by path prefix, records every request.

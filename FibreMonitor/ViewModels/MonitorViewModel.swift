@@ -1,8 +1,14 @@
 import Foundation
 import SwiftUI
 
+public enum AppTab: Hashable, Sendable {
+    case dashboard, clients, wifi, settings
+}
+
 @MainActor
 public final class MonitorViewModel: ObservableObject {
+    @Published public var selectedTab: AppTab = .dashboard
+    @Published public private(set) var isLoggedOut = false
     @Published public private(set) var traffic = TrafficState()
     @Published public private(set) var wan = WanInfo()
     @Published public private(set) var optical = OpticalInfo()
@@ -46,6 +52,12 @@ public final class MonitorViewModel: ObservableObject {
 
     public var onlineDevices: [OntDevice] { devices.filter(\.isOnline) }
 
+    public var displayModelName: String {
+        if !health.model.isEmpty { return health.model }
+        if let detected = settings.activeProfile?.detectedModel, !detected.isEmpty { return detected }
+        return "OptiXstar ONT"
+    }
+
     public var shouldSuggestFallbackHost: Bool {
         isConnectionFailure && settings.activeProfile != nil && !settings.host.isEmpty && settings.host != "192.168.100.1"
     }
@@ -57,7 +69,7 @@ public final class MonitorViewModel: ObservableObject {
     // MARK: Polling & Router Switching
 
     public func startPolling() {
-        guard pollTask == nil, !awaitingRouterSelection else { return }
+        guard pollTask == nil, !awaitingRouterSelection, !isLoggedOut else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -75,6 +87,25 @@ public final class MonitorViewModel: ObservableObject {
         Task { await client.logout() }
     }
 
+    /// Explicit user-triggered logout from Settings. Pauses polling until Reconnect is tapped.
+    public func logoutSession() async {
+        pollTask?.cancel()
+        pollTask = nil
+        diagnosticTask?.cancel()
+        diagnosticTask = nil
+        isLoggedOut = true
+        isConnected = false
+        isRefreshing = false
+        await client.logout()
+        actionMessage = "Logged out of router."
+    }
+
+    public func reconnectSession() {
+        isLoggedOut = false
+        errorMessage = nil
+        startPolling()
+    }
+
     /// Switches to a different router profile: logs out of the old session, resets cookies & view state, and polls the new one.
     public func switchRouter(to profile: RouterProfile) async {
         pollTask?.cancel()
@@ -82,6 +113,7 @@ public final class MonitorViewModel: ObservableObject {
         diagnosticTask?.cancel()
         diagnosticTask = nil
         clearViewState()
+        isLoggedOut = false
         awaitingRouterSelection = false
 
         await client.logout()
@@ -103,6 +135,7 @@ public final class MonitorViewModel: ObservableObject {
         diagnosticTask?.cancel()
         diagnosticTask = nil
         clearViewState()
+        isLoggedOut = false
         awaitingRouterSelection = false
         Task {
             await client.logout()
@@ -118,6 +151,7 @@ public final class MonitorViewModel: ObservableObject {
         guard var profile = settings.activeProfile else { return }
         profile.host = fallbackHost
         settings.updateProfile(profile)
+        isLoggedOut = false
         errorMessage = nil
         isConnectionFailure = false
         await client.switchCredentials(settings.credentials)
@@ -125,10 +159,12 @@ public final class MonitorViewModel: ObservableObject {
     }
 
     public func refreshAll() async {
+        isLoggedOut = false
         lastSlowPoll = .distantPast
         lastPagePoll = .distantPast
         lastLanPoll = .distantPast
         await pollOnce()
+        startPolling()
     }
 
     private func clearViewState() {
@@ -203,6 +239,14 @@ public final class MonitorViewModel: ObservableObject {
             isConnectionFailure = Self.isReachabilityError(error)
             errorMessage = Self.describe(error, host: settings.host)
         }
+    }
+
+    public func fetchWifiSsidConfig(for network: WifiNetwork) async throws -> WifiSsidConfig {
+        let configs = try await client.fetchWlanBasic(bandHint: network.band, ssidIndex: network.ssidIndex)
+        guard let match = configs.first(where: { $0.ssidIndex == network.ssidIndex }) else {
+            throw OntError.badResponse("Wi-Fi network configuration")
+        }
+        return match
     }
 
     public func setRadio(_ radio: WifiRadio, enabled: Bool) async {

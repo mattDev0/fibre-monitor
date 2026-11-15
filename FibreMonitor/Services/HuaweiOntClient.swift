@@ -476,6 +476,113 @@ public actor HuaweiOntClient {
         return state
     }
 
+    /// Fetches ephemeral SSID security & Wi-Fi configuration from `WlanBasic.asp`.
+    /// Callers must discard returned passphrases when dismissed or backgrounded.
+    public func fetchWlanBasic(bandHint: String? = nil, ssidIndex: Int? = nil) async throws -> [WifiSsidConfig] {
+        let text = try await fetch(.init(.get, "/html/amp/wlanbasic/WlanBasic.asp", ajax: false), expect: "stWlan")
+        var configs = Self.parseWlanBasic(text)
+        if let ssidIndex, !configs.contains(where: { $0.ssidIndex == ssidIndex }) {
+            let suffix = (bandHint?.hasPrefix("5") == true) ? "?5G" : "?2G"
+            let alt = try await fetch(.init(.get, "/html/amp/wlanbasic/WlanBasic.asp\(suffix)", ajax: false), expect: "stWlan")
+            configs = Self.parseWlanBasic(alt)
+        }
+        return configs
+    }
+
+    static func parseWlanBasic(_ text: String) -> [WifiSsidConfig] {
+        let wlanParams = [
+            "domain", "name", "enable", "ssid", "wlHide", "DeviceNum", "wmmEnable",
+            "BeaconType", "BasicEncryptionModes", "BasicAuthenticationMode",
+            "KeyIndex", "EncryptionLevel",
+            "WPAEncryptionModes", "WPAAuthenticationMode",
+            "IEEE11iEncryptionModes", "IEEE11iAuthenticationMode",
+            "X_HW_WPAand11iEncryptionModes", "X_HW_WPAand11iAuthenticationMode",
+            "WPARekey", "RadiusServer", "RadiusPort", "RadiusKey",
+            "X_HW_ServiceEnable", "LowerLayers",
+            "X_HW_WAPIEncryptionModes", "X_HW_WAPIAuthenticationMode",
+            "X_HW_WAPIServer", "X_HW_WAPIPort", "X_HW_WPSConfigurated",
+            "UAPSDEnable", "IsolationEnable"
+        ]
+        let wifiParams = ["domain", "name", "enable", "ssid", "mode", "channel", "power", "Country", "AutoChannelEnable", "channelWidth"]
+        let pskParams = ["domain", "psk", "kpp"]
+        let wpsParams = ["domain", "X_HW_ConfigMethod", "DevicePassword", "X_HW_PinGenerator", "Enable"]
+
+        let kppUsed = HuaweiJs.stringVar("kppUsedFlag", in: text) == "1"
+        let passwordMask = HuaweiJs.stringVar("wifiPasswordMask", in: text) == "1"
+
+        func wlanIndex(from domain: String) -> Int? {
+            if let r = domain.range(of: "WLANConfiguration.") {
+                let tail = domain[r.upperBound...]
+                let digits = tail.prefix { $0.isNumber }
+                return Int(digits)
+            }
+            return Int(domain.split(separator: ".").last ?? "")
+        }
+
+        var modesByIndex: [Int: String] = [:]
+        for r in HuaweiJs.records(of: "stWlanWifi", in: text, fallbackParams: wifiParams) {
+            guard let idx = wlanIndex(from: r["domain"] ?? ""), let mode = r["mode"], !mode.isEmpty else { continue }
+            modesByIndex[idx] = mode
+        }
+
+        var pskByIndex: [Int: String] = [:]
+        for r in HuaweiJs.records(of: "stPreSharedKey", in: text, fallbackParams: pskParams) {
+            guard let idx = wlanIndex(from: r["domain"] ?? "") else { continue }
+            let primary = r["psk"] ?? r["value"] ?? ""
+            let kpp = r["kpp"] ?? ""
+            pskByIndex[idx] = (kppUsed && !kpp.isEmpty) ? kpp : primary
+        }
+
+        var wpsByIndex: [Int: [String: String]] = [:]
+        for r in HuaweiJs.records(of: "stWpsPin", in: text, fallbackParams: wpsParams) {
+            guard let idx = wlanIndex(from: r["domain"] ?? "") else { continue }
+            wpsByIndex[idx] = r
+        }
+
+        var result: [WifiSsidConfig] = []
+        var seen = Set<Int>()
+        for r in HuaweiJs.records(of: "stWlan", in: text, fallbackParams: wlanParams) {
+            let domain = r["domain"] ?? ""
+            guard let idx = wlanIndex(from: domain), seen.insert(idx).inserted else { continue }
+            let psk = pskByIndex[idx] ?? ""
+            let masked = passwordMask && psk == "********"
+            let wps = wpsByIndex[idx] ?? [:]
+            result.append(WifiSsidConfig(
+                ssidIndex: idx,
+                domain: domain,
+                interfaceName: r["name"] ?? "",
+                enable: r["enable"] ?? "1",
+                ssid: r["ssid"] ?? "",
+                wlHide: r["wlHide"] ?? "1",
+                deviceNum: r["DeviceNum"] ?? "64",
+                wmmEnable: r["wmmEnable"] ?? "1",
+                beaconType: r["BeaconType"] ?? "",
+                basicAuthenticationMode: r["BasicAuthenticationMode"] ?? "None",
+                basicEncryptionModes: r["BasicEncryptionModes"] ?? "None",
+                keyIndex: r["KeyIndex"] ?? "1",
+                encryptionLevel: r["EncryptionLevel"] ?? "104-bit",
+                wpaEncryptionModes: r["WPAEncryptionModes"] ?? "TKIPEncryption",
+                wpaAuthenticationMode: r["WPAAuthenticationMode"] ?? "PSKAuthentication",
+                ieee11iEncryptionModes: r["IEEE11iEncryptionModes"] ?? "AESEncryption",
+                ieee11iAuthenticationMode: r["IEEE11iAuthenticationMode"] ?? "PSKAuthentication",
+                mixEncryptionModes: r["X_HW_WPAand11iEncryptionModes"] ?? "TKIPandAESEncryption",
+                mixAuthenticationMode: r["X_HW_WPAand11iAuthenticationMode"] ?? "PSKAuthentication",
+                wpaRekey: r["WPARekey"] ?? "3600",
+                serviceEnable: r["X_HW_ServiceEnable"] ?? "1",
+                lowerLayers: r["LowerLayers"] ?? "",
+                standard: modesByIndex[idx] ?? "11n",
+                psk: psk,
+                isPasswordMasked: masked,
+                wpsEnable: wps["Enable"] ?? "0",
+                wpsConfigMethod: wps["X_HW_ConfigMethod"] ?? "PushButton",
+                wpsPinGenerator: wps["X_HW_PinGenerator"] ?? "AP",
+                wpsDevicePassword: wps["DevicePassword"] ?? ""
+            ))
+        }
+        result.sort { $0.ssidIndex < $1.ssidIndex }
+        return result
+    }
+
     /// Turns a whole radio (2.4 GHz = 1, 5 GHz = 2) on or off, like the Wi-Fi page's switch.
     /// Refuses to switch off the last radio that is on, which would cut every Wi-Fi device off.
     public func setRadio(_ index: Int, enabled: Bool) async throws -> WifiState {

@@ -47,7 +47,7 @@ public struct LiquidGlassPillModifier: ViewModifier {
     }
 }
 
-/// Pre-iOS 26 approximation: blur material with a hairline edge and soft shadow.
+/// Pre-iOS 26 approximation: regular blur material with a hairline edge and soft shadow.
 private struct LegacyGlassModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     let cornerRadius: CGFloat
@@ -59,7 +59,7 @@ private struct LegacyGlassModifier: ViewModifier {
             .background {
                 ZStack {
                     if let tint { shape.fill(tint.opacity(colorScheme == .dark ? 0.08 : 0.04)) }
-                    shape.fill(.ultraThinMaterial)
+                    shape.fill(.regularMaterial)
                 }
             }
             .overlay(

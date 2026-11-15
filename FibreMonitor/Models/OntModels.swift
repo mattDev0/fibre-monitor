@@ -299,3 +299,241 @@ public struct DiagnosticOutput: Equatable, Sendable {
         return DiagnosticOutput(text: String(joined[..<r.lowerBound]), status: status.isEmpty ? "Complete" : status)
     }
 }
+
+public enum WifiAuthMode: Equatable, Sendable {
+    case wpa2Psk
+    case wpaWpa2Psk
+    case wpaPsk
+    case wpa3Psk
+    case wpa2Wpa3Psk
+    case open
+    case wep
+    case wapi
+    case enterprise
+    case other(String)
+
+    public var isPsk: Bool {
+        switch self {
+        case .wpa2Psk, .wpaWpa2Psk, .wpaPsk, .wpa3Psk, .wpa2Wpa3Psk:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Authentication label shown in the UI and QR sheet.
+    public var displayName: String {
+        switch self {
+        case .wpa2Psk: return "WPA2-PSK"
+        case .wpaWpa2Psk: return "WPA/WPA2-PSK"
+        case .wpaPsk: return "WPA-PSK"
+        case .wpa3Psk: return "WPA3-SAE"
+        case .wpa2Wpa3Psk: return "WPA2/WPA3-PSK"
+        case .open: return "Open (No password)"
+        case .wep: return "WEP"
+        case .wapi: return "WAPI"
+        case .enterprise: return "WPA Enterprise"
+        case .other(let raw): return raw.isEmpty ? "Unknown" : raw
+        }
+    }
+
+    /// QR `WIFI:T:...` security type, or nil if QR generation isn't supported (e.g., Enterprise).
+    public var qrType: String? {
+        switch self {
+        case .wpa2Psk, .wpaWpa2Psk, .wpaPsk, .wpa3Psk, .wpa2Wpa3Psk:
+            return "WPA"
+        case .open:
+            return "nopass"
+        case .wep:
+            return "WEP"
+        case .wapi, .enterprise, .other:
+            return nil
+        }
+    }
+}
+
+/// Ephemeral SSID configuration parsed from `/html/amp/wlanbasic/WlanBasic.asp`.
+/// Contains the live Wi-Fi passphrase when the router exposes it; never persist to disk.
+public struct WifiSsidConfig: Equatable, Sendable, Identifiable {
+    public var id: Int { ssidIndex }
+    public var ssidIndex: Int
+    public var domain: String
+    public var interfaceName: String
+    public var enable: String
+    public var ssid: String
+    public var wlHide: String
+    public var deviceNum: String
+    public var wmmEnable: String
+    public var beaconType: String
+    public var basicAuthenticationMode: String
+    public var basicEncryptionModes: String
+    public var keyIndex: String
+    public var encryptionLevel: String
+    public var wpaEncryptionModes: String
+    public var wpaAuthenticationMode: String
+    public var ieee11iEncryptionModes: String
+    public var ieee11iAuthenticationMode: String
+    public var mixEncryptionModes: String
+    public var mixAuthenticationMode: String
+    public var wpaRekey: String
+    public var serviceEnable: String
+    public var lowerLayers: String
+    public var standard: String
+    public var psk: String
+    public var isPasswordMasked: Bool
+    public var wpsEnable: String
+    public var wpsConfigMethod: String
+    public var wpsPinGenerator: String
+    public var wpsDevicePassword: String
+
+    public init(
+        ssidIndex: Int,
+        domain: String,
+        interfaceName: String = "",
+        enable: String = "1",
+        ssid: String = "",
+        wlHide: String = "1",
+        deviceNum: String = "64",
+        wmmEnable: String = "1",
+        beaconType: String = "",
+        basicAuthenticationMode: String = "None",
+        basicEncryptionModes: String = "None",
+        keyIndex: String = "1",
+        encryptionLevel: String = "104-bit",
+        wpaEncryptionModes: String = "TKIPEncryption",
+        wpaAuthenticationMode: String = "PSKAuthentication",
+        ieee11iEncryptionModes: String = "AESEncryption",
+        ieee11iAuthenticationMode: String = "PSKAuthentication",
+        mixEncryptionModes: String = "TKIPandAESEncryption",
+        mixAuthenticationMode: String = "PSKAuthentication",
+        wpaRekey: String = "3600",
+        serviceEnable: String = "1",
+        lowerLayers: String = "",
+        standard: String = "11n",
+        psk: String = "",
+        isPasswordMasked: Bool = false,
+        wpsEnable: String = "0",
+        wpsConfigMethod: String = "PushButton",
+        wpsPinGenerator: String = "AP",
+        wpsDevicePassword: String = ""
+    ) {
+        self.ssidIndex = ssidIndex
+        self.domain = domain
+        self.interfaceName = interfaceName
+        self.enable = enable
+        self.ssid = ssid
+        self.wlHide = wlHide
+        self.deviceNum = deviceNum
+        self.wmmEnable = wmmEnable
+        self.beaconType = beaconType
+        self.basicAuthenticationMode = basicAuthenticationMode
+        self.basicEncryptionModes = basicEncryptionModes
+        self.keyIndex = keyIndex
+        self.encryptionLevel = encryptionLevel
+        self.wpaEncryptionModes = wpaEncryptionModes
+        self.wpaAuthenticationMode = wpaAuthenticationMode
+        self.ieee11iEncryptionModes = ieee11iEncryptionModes
+        self.ieee11iAuthenticationMode = ieee11iAuthenticationMode
+        self.mixEncryptionModes = mixEncryptionModes
+        self.mixAuthenticationMode = mixAuthenticationMode
+        self.wpaRekey = wpaRekey
+        self.serviceEnable = serviceEnable
+        self.lowerLayers = lowerLayers
+        self.standard = standard
+        self.psk = psk
+        self.isPasswordMasked = isPasswordMasked
+        self.wpsEnable = wpsEnable
+        self.wpsConfigMethod = wpsConfigMethod
+        self.wpsPinGenerator = wpsPinGenerator
+        self.wpsDevicePassword = wpsDevicePassword
+    }
+
+    public var isEnabled: Bool {
+        enable == "1" && serviceEnable != "0"
+    }
+
+    public var isHidden: Bool {
+        wlHide == "0"
+    }
+
+    public var authMode: WifiAuthMode {
+        switch beaconType {
+        case "11i", "WPA2":
+            if ieee11iAuthenticationMode == "PSKAuthentication" { return .wpa2Psk }
+            if ieee11iAuthenticationMode == "EAPAuthentication" { return .enterprise }
+        case "WPAand11i", "WPA/WPA2":
+            if mixAuthenticationMode == "PSKAuthentication" { return .wpaWpa2Psk }
+            if mixAuthenticationMode == "EAPAuthentication" { return .enterprise }
+        case "WPA":
+            if wpaAuthenticationMode == "PSKAuthentication" { return .wpaPsk }
+            if wpaAuthenticationMode == "EAPAuthentication" { return .enterprise }
+        case "WPA3":
+            if mixAuthenticationMode == "SAEAuthentication" { return .wpa3Psk }
+            if mixAuthenticationMode == "EAPAuthentication" { return .enterprise }
+        case "WPA2/WPA3":
+            if mixAuthenticationMode == "PSKandSAEAuthentication" { return .wpa2Wpa3Psk }
+            if mixAuthenticationMode == "EAPAuthentication" { return .enterprise }
+        case "Basic", "None", "":
+            let openAuth = basicAuthenticationMode.isEmpty
+                || basicAuthenticationMode == "None"
+                || basicAuthenticationMode == "OpenSystem"
+            if openAuth && (basicEncryptionModes.isEmpty || basicEncryptionModes == "None") {
+                return .open
+            }
+            if basicEncryptionModes == "WEPEncryption" || basicAuthenticationMode == "SharedAuthentication" {
+                return .wep
+            }
+        case "X_HW_WAPI":
+            return .wapi
+        default:
+            break
+        }
+        return .other(beaconType)
+    }
+
+    public var qrPayload: String? {
+        WifiQrPayload.string(ssid: ssid, password: isPasswordMasked ? nil : psk, authMode: authMode, isHidden: isHidden)
+    }
+}
+
+public enum WifiQrPayload {
+    public static func escape(_ value: String) -> String {
+        var out = ""
+        out.reserveCapacity(value.count)
+        for ch in value {
+            switch ch {
+            case "\\", ";", ",", ":", "\"":
+                out.append("\\")
+                out.append(ch)
+            default:
+                out.append(ch)
+            }
+        }
+        return out
+    }
+
+    public static func string(ssid: String, password: String?, authMode: WifiAuthMode, isHidden: Bool = false) -> String? {
+        guard !ssid.isEmpty, let type = authMode.qrType else { return nil }
+        let escapedSsid = escape(ssid)
+        let hiddenPart = isHidden ? "H:true;" : ""
+        if authMode == .open {
+            return "WIFI:T:nopass;S:\(escapedSsid);\(hiddenPart);"
+        }
+        guard let password, !password.isEmpty else { return nil }
+        return "WIFI:T:\(type);S:\(escapedSsid);P:\(escape(password));\(hiddenPart);"
+    }
+}
+
+public enum TrafficRateFormatter {
+    public static func string(bytesPerSecond: Int) -> String {
+        let clamped = max(0, bytesPerSecond)
+        if clamped >= 1_000_000 {
+            return String(format: "%.1f MB/s", Double(clamped) / 1_000_000)
+        }
+        if clamped >= 1_000 {
+            let kb = Double(clamped) / 1_000
+            return kb >= 100 ? String(format: "%.0f KB/s", kb) : String(format: "%.1f KB/s", kb)
+        }
+        return "\(clamped) B/s"
+    }
+}

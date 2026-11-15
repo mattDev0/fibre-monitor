@@ -4,7 +4,7 @@ import SwiftUI
 struct FibreMonitorApp: App {
     var body: some Scene {
         WindowGroup {
-            DashboardView()
+            MainTabView()
         }
     }
 }
