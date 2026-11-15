@@ -92,10 +92,8 @@ Every index `0...43` in `HuaweiOntClient.wanPppParams` matches the 44-argument `
 
 ---
 
----
-
 ## Phase 4: Additional router writes (#198 Device Rename & #704 Wi-Fi Credential Edit)
-**Status:** Implemented and tested against synthetic fixtures (awaiting CI verification).
+**Status:** Verified on CI (`ios-build` run `43763941788` passed all 61 unit tests and device build).
 
 ### What was done
 - **Router-side device rename (`#198`, `HuaweiOntClient.renameDevice`, `ClientsTabView.swift`):**
@@ -116,6 +114,27 @@ Every index `0...43` in `HuaweiOntClient.wanPppParams` matches the 44-argument `
 - **`y.` fields for WPA3 / WPA2-WPA3:** Capture `#704` was recorded on `11i` (`.wpa2Psk`) using `y.IEEE11iAuthenticationMode` and `y.IEEE11iEncryptionModes`. For `.wpa3Psk` and `.wpa2Wpa3Psk`, `wifiEditRequest` substitutes `y.X_HW_WPAand11iAuthenticationMode` and `y.X_HW_WPAand11iEncryptionModes` based on `amp_wlanbasic_WlanBasic.asp` `addParameter1`; needs real hardware verification.
 
 ---
+
+## Phase 5: Polish, documentation, and v2.0.0 release prep
+**Status:** Implemented (awaiting final Phase 5 CI run on `v2`).
+
+### What was done
+- **Empty, loading, error, pull-to-refresh, VoiceOver & contrast polish:**
+  - Removed dimmed opacity from offline `ClientRow` labels so secondary/offline text keeps clear contrast in both light and dark themes; hid decorative icons from VoiceOver across `MetricViews.swift`, `ClientsTabView.swift`, and `WifiTabView.swift`.
+  - Added clear loading, error, and logged-out states (with inline `Reconnect` action) to empty screens in `ClientsTabView.swift`, `WifiTabView.swift`, and `LanScreen` in `SettingsTabView.swift`.
+  - Added pull-to-refresh on `SettingsTabView` so all four tabs and `LanScreen` support refresh; added accessible labels/values to `RouterProfileRow`, radio switches, offline toggle button, and diagnostic terminal output (`DiagnosticsCard.swift`).
+  - Added haptics on remaining user actions (`logoutSession`, `deleteProfile`, diagnostic start/stop, QR password Copy).
+- **Documentation (`README.md`):** Updated feature overview, multi-router details, complete endpoint table matching `HuaweiOntClient.swift`, safety/session behavior, and folder layout.
+- **Versioning (`project.yml`):** Bumped `MARKETING_VERSION` to `2.0.0` and `CURRENT_PROJECT_VERSION` to `4`.
+
+---
+
+## Hardware Verification Checklist (For Physical iPhone & Friend's GNMTNNCE HG8145X6)
+1. **Multi-router & migration:** Install over v1.2.0 (`1.2.0 (3)`) and confirm `SystemKeychainStore` migrates legacy `router-password` to the new profile UUID entry without losing host/username/local aliases; add MTN template profile (`192.168.2.1`) and test launch picker + live switching.
+2. **Dashboard & Optical/WAN:** Confirm Optical Rx range bar position & quality pill, WAN IP / gateway / DNS / uptime (both PPPoE and IPoE if applicable), and graceful hiding of `System Load` / `ONT Uptime` / `Tx Laser Power` when `deviceinfo.asp` / `getOpticTxRx.asp` are absent.
+3. **Clients & `#198` Router Rename:** Confirm non-zero `TrafficSendRate`/`TrafficRecvRate` units match live speeds (bytes/s vs KB/s), test `Rename on Router` persistence and max length on GNMTNNCE (`bbsp_userdevinfo_userdetdevinfo.asp` had no JS limit), and test `Remove from Router List` on an offline client.
+4. **Wi-Fi QR & `#704` Credential Edit:** Verify `WlanBasic.asp` vs `?2G`/`?5G` behavior and whether `wifiPasswordMask` is `'0'` or `'1'`; test scanning generated QR codes with iOS/Android Camera; test radio toggles (including connected-band disconnect warning) and `#704` SSID/password change on WPA2-PSK (and WPA3-PSK if enabled), paying close attention to `w.Key` behavior if EasyMesh / Wi-Fi Cover is active.
+5. **Second HTTP capture requested (from `docs/V2_PLAN.md` §4):** With DevTools "Preserve log" enabled, log into the friend's GNMTNNCE ONT and open **System Information → Device Information**, **Optical Information**, **Maintenance Diagnosis → ping `8.8.8.8`**, **WAN Information**, then log out — to verify `deviceinfo.asp`, `getOpticTxRx.asp`, `diagnosecommon.asp`, and `logout.cgi` on that firmware.
 
 ## Needs capture / Unverified on GNMTNNCE hardware
 - `POST /html/ssmp/common/getOpticTxRx.asp` (Tx power, optical temperature, voltage, bias) — referenced in `index.asp`, not captured.

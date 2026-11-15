@@ -19,7 +19,12 @@ public struct WifiTabView: View {
                     if !viewModel.settings.isConfigured {
                         WifiEmptyCard(message: "Add a router in Settings to manage Wi-Fi networks.")
                     } else if viewModel.wifi.radios.isEmpty && viewModel.wifi.networks.isEmpty {
-                        WifiEmptyCard(message: viewModel.isConnected ? "Reading Wi-Fi configuration…" : "Waiting for the router…")
+                        WifiEmptyCard(
+                            message: wifiEmptyMessage,
+                            isLoading: viewModel.isRefreshing && !viewModel.isLoggedOut,
+                            actionTitle: viewModel.isLoggedOut ? "Reconnect" : nil,
+                            action: viewModel.isLoggedOut ? { viewModel.reconnectSession() } : nil
+                        )
                     } else {
                         radiosCard
 
@@ -98,6 +103,7 @@ public struct WifiTabView: View {
                     Image(systemName: radio.enabled ? "wifi" : "wifi.slash")
                         .foregroundColor(radio.enabled ? .accentColor : .secondary)
                         .frame(width: 28)
+                        .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(MonitorViewModel.bandName(radio.band))
@@ -116,6 +122,7 @@ public struct WifiTabView: View {
                         isOn: Binding(get: { radio.enabled }, set: { pendingRadio = (radio, $0) })
                     )
                     .labelsHidden()
+                    .accessibilityLabel("Toggle \(MonitorViewModel.bandName(radio.band)) Wi-Fi")
                     .disabled(viewModel.isWifiSaving || !viewModel.isConnected)
                 }
                 .padding(10)
@@ -140,6 +147,13 @@ public struct WifiTabView: View {
             groups.append(("Other Networks", remainder))
         }
         return groups
+    }
+
+    private var wifiEmptyMessage: String {
+        if viewModel.isLoggedOut { return "Session is logged out. Tap Reconnect to manage Wi-Fi." }
+        if viewModel.isConnected { return "Reading Wi-Fi configuration…" }
+        if let err = viewModel.errorMessage { return err }
+        return viewModel.isRefreshing ? "Loading Wi-Fi configuration…" : "Waiting for the router… Pull down to refresh."
     }
 }
 
@@ -336,6 +350,7 @@ private struct WifiQrSheet: View {
 
                         Button {
                             UIPasteboard.general.string = cfg.psk
+                            Haptics.impact(.light)
                             copiedPassword = true
                         } label: {
                             Label(copiedPassword ? "Copied" : "Copy", systemImage: copiedPassword ? "checkmark" : "doc.on.doc")
@@ -714,16 +729,29 @@ private enum QrImageGenerator {
 
 private struct WifiEmptyCard: View {
     let message: String
+    var isLoading: Bool = false
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 10) {
-            Image(systemName: "wifi")
-                .font(.system(size: 32))
-                .foregroundColor(.secondary)
+            if isLoading {
+                ProgressView()
+            } else {
+                Image(systemName: "wifi")
+                    .font(.system(size: 32))
+                    .foregroundColor(.secondary)
+                    .accessibilityHidden(true)
+            }
             Text(message)
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .liquidGlassSmallButton()
+                    .padding(.top, 2)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)

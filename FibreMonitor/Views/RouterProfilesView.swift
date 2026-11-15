@@ -95,6 +95,8 @@ struct RouterProfileRow: View {
             }
         }
         .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(isActive ? "Active router" : "")
     }
 }
 

@@ -126,6 +126,7 @@ public struct SettingsTabView: View {
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
+            .refreshable { await viewModel.refreshAll() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     if !settings.profiles.isEmpty {
@@ -155,6 +156,7 @@ public struct SettingsTabView: View {
                 if let profile = pendingDelete {
                     let wasActive = profile.id == settings.activeProfile?.id
                     settings.deleteProfile(profile.id)
+                    Haptics.notify(.warning)
                     if wasActive {
                         viewModel.settingsChanged()
                     }
@@ -202,8 +204,29 @@ private struct LanScreen: View {
 
     var body: some View {
         ScrollView {
-            LanCard(lan: viewModel.lan)
-                .padding()
+            VStack(spacing: 14) {
+                if !viewModel.settings.isConfigured {
+                    Text("Add a router in Settings to inspect LAN & DHCP configuration.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
+                        .liquidGlassCard()
+                } else {
+                    LanCard(lan: viewModel.lan)
+                    if viewModel.lan.routerIp.isEmpty {
+                        Text(viewModel.isLoggedOut
+                             ? "Session logged out. Reconnect and pull down to load LAN settings."
+                             : "Pull down to refresh LAN & DHCP settings.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .multilineTextAlignment(.center)
+                            .liquidGlassCard()
+                    }
+                }
+            }
+            .padding()
         }
         .background { LiquidGlassBackground() }
         .refreshable { await viewModel.refreshAll() }

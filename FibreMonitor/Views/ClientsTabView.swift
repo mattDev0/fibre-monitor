@@ -22,13 +22,14 @@ public struct ClientsTabView: View {
                         )
                     } else if filteredOnline.isEmpty && filteredOffline.isEmpty {
                         ClientsEmptyCard(
-                            icon: searchText.isEmpty ? "laptopcomputer.and.iphone" : "magnifyingglass",
-                            title: searchText.isEmpty
-                                ? (viewModel.isConnected ? "No Clients Reported" : "Waiting for Router…")
-                                : "No Matching Clients",
-                            message: searchText.isEmpty
-                                ? "Pull down to refresh once the router responds."
-                                : "Try searching by name, IP address, MAC, or vendor."
+                            icon: searchText.isEmpty
+                                ? (viewModel.isLoggedOut ? "rectangle.portrait.and.arrow.right" : "laptopcomputer.and.iphone")
+                                : "magnifyingglass",
+                            title: clientsEmptyTitle,
+                            message: clientsEmptyMessage,
+                            isLoading: searchText.isEmpty && viewModel.isRefreshing && !viewModel.isLoggedOut,
+                            actionTitle: searchText.isEmpty && viewModel.isLoggedOut ? "Reconnect" : nil,
+                            action: viewModel.isLoggedOut ? { viewModel.reconnectSession() } : nil
                         )
                     } else {
                         if !filteredOnline.isEmpty {
@@ -59,6 +60,7 @@ public struct ClientsTabView: View {
                                     }
                                     .font(.caption.weight(.semibold))
                                     .liquidGlassSmallButton()
+                                    .accessibilityLabel(showOffline ? "Hide offline devices" : "Show offline devices")
                                 }
                                 if showOffline {
                                     ForEach(filteredOffline) { device in
@@ -111,6 +113,20 @@ public struct ClientsTabView: View {
         filter(viewModel.devices.filter { !$0.isOnline })
     }
 
+    private var clientsEmptyTitle: String {
+        if !searchText.isEmpty { return "No Matching Clients" }
+        if viewModel.isLoggedOut { return "Logged Out of Router" }
+        if viewModel.isConnected { return "No Clients Reported" }
+        return viewModel.isRefreshing ? "Loading Clients…" : "Waiting for Router…"
+    }
+
+    private var clientsEmptyMessage: String {
+        if !searchText.isEmpty { return "Try searching by name, IP address, MAC, or vendor." }
+        if viewModel.isLoggedOut { return "Tap Reconnect to resume reading the device list." }
+        if let err = viewModel.errorMessage { return err }
+        return "Pull down to refresh once the router responds."
+    }
+
     private func filter(_ items: [OntDevice]) -> [OntDevice] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return items }
@@ -138,10 +154,12 @@ private struct ClientRow: View {
                 .foregroundColor(device.isOnline ? .accentColor : .secondary)
                 .frame(width: 34, height: 34)
                 .background(Color.accentColor.opacity(device.isOnline ? 0.14 : 0.06), in: Circle())
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(displayName)
                     .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
                     .lineLimit(1)
                 Text(device.ip.isEmpty ? device.mac : device.ip)
                     .font(.caption.monospaced())
@@ -165,10 +183,10 @@ private struct ClientRow: View {
             Image(systemName: "chevron.right")
                 .font(.caption2.weight(.semibold))
                 .foregroundColor(.secondary.opacity(0.6))
+                .accessibilityHidden(true)
         }
         .padding(10)
         .liquidGlassPill()
-        .opacity(device.isOnline ? 1 : 0.68)
         .accessibilityElement(children: .combine)
         .accessibilityHint("Double-tap to inspect device details")
     }
@@ -420,18 +438,31 @@ private struct ClientsEmptyCard: View {
     let icon: String
     let title: String
     let message: String
+    var isLoading: Bool = false
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 32))
-                .foregroundColor(.secondary)
+            if isLoading {
+                ProgressView()
+            } else {
+                Image(systemName: icon)
+                    .font(.system(size: 32))
+                    .foregroundColor(.secondary)
+                    .accessibilityHidden(true)
+            }
             Text(title)
                 .font(.headline)
             Text(message)
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .liquidGlassSmallButton()
+                    .padding(.top, 2)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)

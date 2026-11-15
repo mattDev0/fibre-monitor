@@ -35,7 +35,9 @@ private struct SpeedCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Image(systemName: icon).foregroundColor(tint)
+                Image(systemName: icon)
+                    .foregroundColor(tint)
+                    .accessibilityHidden(true)
                 Text(title).font(.caption2.weight(.bold)).foregroundColor(.secondary)
                 Spacer()
             }
@@ -225,6 +227,7 @@ struct MetricTile: View {
                 Image(systemName: icon)
                     .font(.caption.weight(.semibold))
                     .foregroundColor(iconTint)
+                    .accessibilityHidden(true)
                 Text(title)
                     .font(.caption2.weight(.bold))
                     .foregroundColor(.secondary)
@@ -356,7 +359,9 @@ struct CardHeader<Accessory: View>: View {
 
     var body: some View {
         HStack {
-            Image(systemName: icon).foregroundColor(.accentColor)
+            Image(systemName: icon)
+                .foregroundColor(.accentColor)
+                .accessibilityHidden(true)
             Text(title).font(.subheadline.weight(.bold))
             Spacer()
             accessory

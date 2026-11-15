@@ -112,6 +112,7 @@ public final class MonitorViewModel: ObservableObject {
         isConnected = false
         isRefreshing = false
         await client.logout()
+        Haptics.impact(.light)
         actionMessage = "Logged out of router."
     }
 

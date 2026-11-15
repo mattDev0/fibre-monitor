@@ -44,6 +44,7 @@ struct DiagnosticsCard: View {
             }
 
             Button {
+                Haptics.impact(.light)
                 if viewModel.isDiagnosing { viewModel.stopDiagnostic() } else { viewModel.startDiagnostic() }
             } label: {
                 Label(viewModel.isDiagnosing ? "Stop" : "Run \(viewModel.diagnosticMode.rawValue)",
@@ -73,7 +74,9 @@ struct DiagnosticsCard: View {
                         .padding(12)
                     }
                     .frame(height: 180)
-                    .background(Color.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Diagnostic output")
                     .onChange(of: viewModel.diagnosticOutput) { _ in
                         withAnimation { proxy.scrollTo("end", anchor: .bottom) }
                     }
