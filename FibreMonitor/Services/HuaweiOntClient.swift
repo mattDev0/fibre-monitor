@@ -17,11 +17,22 @@ public actor HuaweiOntClient {
         }
     }
 
+    public struct RouterIdentity: Equatable, Sendable {
+        public var model: String?
+        public var cfgMode: String?
+
+        public init(model: String? = nil, cfgMode: String? = nil) {
+            self.model = model
+            self.cfgMode = cfgMode
+        }
+    }
+
     private let transport: OntTransport
     private var credentials: Credentials
     private var loggedIn = false
     /// Set after a rejected login; cleared only when the credentials change.
     private var loginBlocked = false
+    public private(set) var detectedIdentity: RouterIdentity?
 
     private var lastCounters: (rx: UInt64, tx: UInt64, time: Date)?
     private var traffic = TrafficState()
@@ -39,6 +50,23 @@ public actor HuaweiOntClient {
         loginBlocked = false
         lastCounters = nil
         traffic = TrafficState()
+        wanDomain = nil
+        ssidBands = [:]
+        detectedIdentity = nil
+    }
+
+    /// Logs out of any active session, resets transport cookies, and switches to new router credentials.
+    public func switchCredentials(_ new: Credentials) async {
+        await logout()
+        credentials = new
+        loggedIn = false
+        loginBlocked = false
+        lastCounters = nil
+        traffic = TrafficState()
+        wanDomain = nil
+        ssidBands = [:]
+        detectedIdentity = nil
+        await transport.resetSession(host: new.host)
     }
 
     public var isLoginBlocked: Bool { loginBlocked }
@@ -46,7 +74,10 @@ public actor HuaweiOntClient {
     // MARK: Session
 
     public func login() async throws {
-        guard !credentials.password.isEmpty else { throw OntError.notConfigured }
+        guard !credentials.password.isEmpty, !credentials.host.trimmingCharacters(in: .whitespaces).isEmpty else {
+            throw OntError.notConfigured
+        }
+        guard Self.isValidHost(credentials.host) else { throw OntError.invalidHost }
         guard !loginBlocked else { throw OntError.loginRejected }
         await transport.resetSession(host: credentials.host)
         let token = HuaweiJs.clean(try await transport.send(.init(.post, "/asp/GetRandCount.asp"), host: credentials.host))
@@ -66,19 +97,33 @@ public actor HuaweiOntClient {
             throw OntError.loginRejected
         }
         loggedIn = true
-        // Load the main page once like a browser would, so the session is fully set up.
-        _ = try? await transport.send(.init(.get, "/index.asp", ajax: false), host: credentials.host)
+        // Load the main page once like a browser would, so the session is fully set up and identity can be read.
+        if let indexText = try? await transport.send(.init(.get, "/index.asp", ajax: false), host: credentials.host) {
+            let model = HuaweiJs.stringVar("ProductName", in: indexText)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cfg = HuaweiJs.stringVar("CfgMode", in: indexText)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if (model?.isEmpty == false) || (cfg?.isEmpty == false) {
+                detectedIdentity = RouterIdentity(
+                    model: model?.isEmpty == false ? model : nil,
+                    cfgMode: cfg?.isEmpty == false ? cfg : nil
+                )
+            }
+        }
     }
 
     public func logout() async {
-        guard loggedIn else { return }
+        let wasLoggedIn = loggedIn
+        let currentHost = credentials.host
         loggedIn = false
-        if let token = try? await freshToken() {
+        lastCounters = nil
+        wanDomain = nil
+        ssidBands = [:]
+        detectedIdentity = nil
+        if wasLoggedIn, let token = try? await freshToken() {
             _ = try? await transport.send(.init(.post, "/logout.cgi?RequestFile=html/logout.html",
                                                 form: [("x.X_HW_Token", token)], ajax: false),
-                                          host: credentials.host)
+                                          host: currentHost)
         }
-        lastCounters = nil
+        await transport.resetSession(host: currentHost)
     }
 
     /// Sends a data request, logging in first if needed and once more if the session expired.
@@ -187,9 +232,10 @@ public actor HuaweiOntClient {
 
     private static let diagnosePage = "RequestFile=html/bbsp/maintenance/diagnosecommon.asp"
 
-    static func isValidHost(_ host: String) -> Bool {
+    public static func isValidHost(_ host: String) -> Bool {
         let h = host.trimmingCharacters(in: .whitespaces)
         guard !h.isEmpty, h.count <= 253 else { return false }
+        guard !h.hasPrefix("."), !h.hasPrefix("-"), !h.contains("..") else { return false }
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:")
         return h.unicodeScalars.allSatisfy { allowed.contains($0) }
     }

@@ -12,10 +12,15 @@ public struct DashboardView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 14) {
-                    StatusRow(viewModel: viewModel)
+                    StatusRow(viewModel: viewModel, settings: viewModel.settings)
 
                     if let err = viewModel.errorMessage {
-                        ErrorBanner(message: err) { showSettings = true }
+                        ErrorBanner(
+                            message: err,
+                            suggestFallback: viewModel.shouldSuggestFallbackHost,
+                            onTryFallback: { Task { await viewModel.useFallbackHost() } },
+                            openSettings: { showSettings = true }
+                        )
                     }
 
                     SpeedSection(traffic: viewModel.traffic)
@@ -34,6 +39,11 @@ public struct DashboardView: View {
             .refreshable { await viewModel.refreshAll() }
             .navigationTitle("Fibre")
             .toolbar {
+                ToolbarItemGroup(placement: .topBarLeading) {
+                    RouterSwitcherMenu(viewModel: viewModel, settings: viewModel.settings) {
+                        showSettings = true
+                    }
+                }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
                         Task { await viewModel.refreshAll() }
@@ -58,10 +68,11 @@ public struct DashboardView: View {
                 }
             }
         }
+        .sheet(isPresented: $viewModel.awaitingRouterSelection) {
+            RouterLaunchPickerView(viewModel: viewModel)
+        }
         .sheet(isPresented: $showSettings) {
-            SettingsSheetView(settings: viewModel.settings) {
-                viewModel.settingsChanged()
-            }
+            SettingsSheetView(viewModel: viewModel)
         }
         .alert("Restart Router?", isPresented: $showRebootAlert) {
             Button("Cancel", role: .cancel) {}
@@ -78,14 +89,64 @@ public struct DashboardView: View {
             Button("OK", role: .cancel) {}
         }
         .onAppear {
-            if !viewModel.settings.isConfigured { showSettings = true }
-            viewModel.startPolling()
+            if !viewModel.awaitingRouterSelection {
+                if !viewModel.settings.isConfigured {
+                    showSettings = true
+                } else {
+                    viewModel.startPolling()
+                }
+            }
         }
         .onChange(of: scenePhase) { phase in
             switch phase {
-            case .active: viewModel.startPolling()
-            case .background: viewModel.stopPolling()
-            default: break
+            case .active:
+                if !viewModel.awaitingRouterSelection && viewModel.settings.isConfigured {
+                    viewModel.startPolling()
+                }
+            case .background:
+                viewModel.stopPolling()
+            default:
+                break
+            }
+        }
+    }
+}
+
+private struct RouterSwitcherMenu: View {
+    @ObservedObject var viewModel: MonitorViewModel
+    @ObservedObject var settings: SettingsStore
+    let openSettings: () -> Void
+
+    var body: some View {
+        if settings.profiles.count >= 2 {
+            Menu {
+                ForEach(settings.profiles) { profile in
+                    Button {
+                        guard profile.id != settings.activeProfile?.id else { return }
+                        viewModel.selectRouterAndStart(profile)
+                    } label: {
+                        if profile.id == settings.activeProfile?.id {
+                            Label("\(profile.name) (\(profile.host))", systemImage: "checkmark")
+                        } else {
+                            Text("\(profile.name) (\(profile.host))")
+                        }
+                    }
+                }
+                Divider()
+                Button {
+                    openSettings()
+                } label: {
+                    Label("Manage Routers…", systemImage: "slider.horizontal.3")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "wifi.router")
+                    Text(settings.activeProfile?.name ?? "Router")
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                }
+                .font(.subheadline.weight(.medium))
             }
         }
     }
@@ -93,6 +154,7 @@ public struct DashboardView: View {
 
 private struct StatusRow: View {
     @ObservedObject var viewModel: MonitorViewModel
+    @ObservedObject var settings: SettingsStore
 
     var body: some View {
         HStack(spacing: 6) {
@@ -110,9 +172,16 @@ private struct StatusRow: View {
                     .foregroundColor(.secondary)
             }
             Spacer()
-            Text(viewModel.settings.host)
-                .font(.caption2.monospaced())
-                .foregroundColor(.secondary)
+            if let name = settings.activeProfile?.name, !name.isEmpty {
+                Text("\(name) · \(settings.host)")
+                    .font(.caption2.monospaced())
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            } else if !settings.host.isEmpty {
+                Text(settings.host)
+                    .font(.caption2.monospaced())
+                    .foregroundColor(.secondary)
+            }
         }
     }
 
@@ -127,17 +196,26 @@ private struct StatusRow: View {
 
 private struct ErrorBanner: View {
     let message: String
+    let suggestFallback: Bool
+    let onTryFallback: () -> Void
     let openSettings: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.orange)
-            Text(message)
-                .font(.caption)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Settings", action: openSettings)
-                .font(.caption.weight(.semibold))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.orange)
+                Text(message)
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Settings", action: openSettings)
+                    .font(.caption.weight(.semibold))
+            }
+            if suggestFallback {
+                Button("Try 192.168.100.1", action: onTryFallback)
+                    .font(.caption.weight(.semibold))
+                    .liquidGlassSmallButton()
+            }
         }
         .liquidGlassPanel(padding: 12)
     }

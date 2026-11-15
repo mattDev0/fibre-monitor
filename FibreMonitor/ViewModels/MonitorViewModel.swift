@@ -23,7 +23,9 @@ public final class MonitorViewModel: ObservableObject {
     @Published public private(set) var isRefreshing = false
     @Published public private(set) var lastUpdate: Date?
     @Published public var errorMessage: String?
+    @Published public private(set) var isConnectionFailure = false
     @Published public var actionMessage: String?
+    @Published public var awaitingRouterSelection: Bool
 
     public let settings: SettingsStore
     private let client: HuaweiOntClient
@@ -36,21 +38,26 @@ public final class MonitorViewModel: ObservableObject {
     private var lastLanPoll: Date = .distantPast
     private let lanInterval: TimeInterval = 300
 
-    public init(settings: SettingsStore = .shared) {
+    public init(settings: SettingsStore = .shared, transport: OntTransport = URLSessionOntTransport()) {
         self.settings = settings
-        self.client = HuaweiOntClient(credentials: settings.credentials)
+        self.client = HuaweiOntClient(credentials: settings.credentials, transport: transport)
+        self.awaitingRouterSelection = settings.profiles.count >= 2
     }
 
     public var onlineDevices: [OntDevice] { devices.filter(\.isOnline) }
+
+    public var shouldSuggestFallbackHost: Bool {
+        isConnectionFailure && settings.activeProfile != nil && !settings.host.isEmpty && settings.host != "192.168.100.1"
+    }
 
     public func name(for device: OntDevice) -> String {
         settings.alias(for: device.mac) ?? device.displayName
     }
 
-    // MARK: Polling
+    // MARK: Polling & Router Switching
 
     public func startPolling() {
-        guard pollTask == nil else { return }
+        guard pollTask == nil, !awaitingRouterSelection else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -68,14 +75,53 @@ public final class MonitorViewModel: ObservableObject {
         Task { await client.logout() }
     }
 
-    public func settingsChanged() {
-        errorMessage = nil
-        lastSlowPoll = .distantPast
-        traffic = TrafficState()
+    /// Switches to a different router profile: logs out of the old session, resets cookies & view state, and polls the new one.
+    public func switchRouter(to profile: RouterProfile) async {
+        pollTask?.cancel()
+        pollTask = nil
+        diagnosticTask?.cancel()
+        diagnosticTask = nil
+        clearViewState()
+        awaitingRouterSelection = false
+
+        await client.logout()
+        settings.selectProfile(profile.id)
+        await client.switchCredentials(settings.credentials)
+        await pollOnce()
+    }
+
+    public func selectRouterAndStart(_ profile: RouterProfile) {
         Task {
-            await client.update(credentials: settings.credentials)
-            await pollOnce()
+            await switchRouter(to: profile)
+            startPolling()
         }
+    }
+
+    public func settingsChanged() {
+        pollTask?.cancel()
+        pollTask = nil
+        diagnosticTask?.cancel()
+        diagnosticTask = nil
+        clearViewState()
+        awaitingRouterSelection = false
+        Task {
+            await client.logout()
+            await client.switchCredentials(settings.credentials)
+            if settings.isConfigured {
+                await pollOnce()
+                startPolling()
+            }
+        }
+    }
+
+    public func useFallbackHost(_ fallbackHost: String = "192.168.100.1") async {
+        guard var profile = settings.activeProfile else { return }
+        profile.host = fallbackHost
+        settings.updateProfile(profile)
+        errorMessage = nil
+        isConnectionFailure = false
+        await client.switchCredentials(settings.credentials)
+        await pollOnce()
     }
 
     public func refreshAll() async {
@@ -85,14 +131,43 @@ public final class MonitorViewModel: ObservableObject {
         await pollOnce()
     }
 
-    private func pollOnce() async {
+    private func clearViewState() {
+        traffic = TrafficState()
+        wan = WanInfo()
+        optical = OpticalInfo()
+        devices = []
+        health = RouterHealth()
+        wifi = WifiState()
+        lan = LanInfo()
+        diagnosticOutput = DiagnosticOutput()
+        isDiagnosing = false
+        isConnected = false
+        isRefreshing = false
+        lastUpdate = nil
+        errorMessage = nil
+        isConnectionFailure = false
+        actionMessage = nil
+        lastSlowPoll = .distantPast
+        lastPagePoll = .distantPast
+        lastLanPoll = .distantPast
+    }
+
+    public func pollOnce() async {
+        guard settings.activeProfile != nil else {
+            isConnected = false
+            isConnectionFailure = false
+            errorMessage = "Add a router in Settings to get started."
+            return
+        }
         guard settings.isConfigured else {
             isConnected = false
+            isConnectionFailure = false
             errorMessage = OntError.notConfigured.errorDescription
             return
         }
         if await client.isLoginBlocked {
             isConnected = false
+            isConnectionFailure = false
             errorMessage = OntError.loginRejected.errorDescription
             return
         }
@@ -100,6 +175,9 @@ public final class MonitorViewModel: ObservableObject {
         defer { isRefreshing = false }
         do {
             traffic = try await client.pollTraffic()
+            if let activeId = settings.activeProfile?.id, let identity = await client.detectedIdentity {
+                settings.recordDetection(for: activeId, model: identity.model, cfgMode: identity.cfgMode)
+            }
             if Date().timeIntervalSince(lastSlowPoll) >= slowInterval {
                 lastSlowPoll = Date()
                 if let w = try? await client.fetchWan() { wan = w }
@@ -117,11 +195,13 @@ public final class MonitorViewModel: ObservableObject {
                 }
             }
             isConnected = true
+            isConnectionFailure = false
             errorMessage = nil
             lastUpdate = Date()
         } catch {
             isConnected = false
-            errorMessage = Self.describe(error)
+            isConnectionFailure = Self.isReachabilityError(error)
+            errorMessage = Self.describe(error, host: settings.host)
         }
     }
 
@@ -133,7 +213,7 @@ public final class MonitorViewModel: ObservableObject {
             wifi = try await client.setRadio(radio.index, enabled: enabled)
             actionMessage = "\(Self.bandName(radio.band)) Wi-Fi turned \(enabled ? "on" : "off"), confirmed by the router."
         } catch {
-            actionMessage = Self.describe(error)
+            actionMessage = Self.describe(error, host: settings.host)
             if let w = try? await client.fetchWifi() { wifi = w }
         }
     }
@@ -167,7 +247,7 @@ public final class MonitorViewModel: ObservableObject {
                 }
             } catch is CancellationError {
             } catch {
-                self.diagnosticOutput = DiagnosticOutput(text: Self.describe(error), status: "Error")
+                self.diagnosticOutput = DiagnosticOutput(text: Self.describe(error, host: self.settings.host), status: "Error")
             }
         }
     }
@@ -187,7 +267,7 @@ public final class MonitorViewModel: ObservableObject {
             devices = try await client.deleteDevice(device)
             actionMessage = "Removed \(name(for: device)) from the device list."
         } catch {
-            actionMessage = Self.describe(error)
+            actionMessage = Self.describe(error, host: settings.host)
         }
     }
 
@@ -200,19 +280,27 @@ public final class MonitorViewModel: ObservableObject {
             try await client.reboot()
             actionMessage = "Restart sent. The router will be back in about 2 minutes."
         } catch {
-            actionMessage = "Restart failed: \(Self.describe(error))"
+            actionMessage = "Restart failed: \(Self.describe(error, host: settings.host))"
         }
     }
 
-    static func describe(_ error: Error) -> String {
+    static func isReachabilityError(_ error: Error) -> Bool {
+        guard let url = error as? URLError else { return false }
+        switch url.code {
+        case .timedOut, .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .notConnectedToInternet:
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func describe(_ error: Error, host: String = "") -> String {
         if let ont = error as? OntError { return ont.errorDescription ?? "\(ont)" }
-        if let url = error as? URLError {
-            switch url.code {
-            case .timedOut, .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .notConnectedToInternet:
-                return "Can't reach the router. Make sure this iPhone is on its Wi-Fi."
-            default:
-                return url.localizedDescription
+        if isReachabilityError(error) {
+            if !host.isEmpty && host != "192.168.100.1" {
+                return "Can't reach the router at \(host). Make sure this iPhone is on its Wi-Fi, or try 192.168.100.1."
             }
+            return "Can't reach the router. Make sure this iPhone is on its Wi-Fi."
         }
         return error.localizedDescription
     }

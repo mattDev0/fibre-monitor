@@ -112,20 +112,40 @@ extension Fixtures {
     var DhcpMain = new Array(new dhcpmainst("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement","1","192\\x2e168\\x2e100\\x2e2","192\\x2e168\\x2e100\\x2e254","86400","1","","","","","","","","","","","","1","",""),null);
     </script></head></html>
     """
+
+    static let indexPage = """
+    <!DOCTYPE html><html><head><script>
+    var ProductName = 'HG8145X6\\x2d10';
+    var CfgMode ='GNMTNNCE';
+    </script></head></html>
+    """
 }
 
 /// Scripted router: replies by path prefix, records every request.
 final class FakeTransport: OntTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var routes: [(String, [String])] = []
+    private var failingHosts: Set<String> = []
     private(set) var requests: [OntRequest] = []
+    private(set) var recordedRequests: [(host: String, request: OntRequest)] = []
     private(set) var resets = 0
+    private(set) var resetHosts: [String] = []
 
     /// Queue replies for a path prefix; the last one repeats.
     func on(_ prefix: String, _ replies: String...) {
         lock.lock(); defer { lock.unlock() }
         routes.removeAll { $0.0 == prefix }
         routes.append((prefix, replies))
+    }
+
+    func fail(host: String) {
+        lock.lock(); defer { lock.unlock() }
+        failingHosts.insert(host)
+    }
+
+    func allow(host: String) {
+        lock.lock(); defer { lock.unlock() }
+        failingHosts.remove(host)
     }
 
     func paths() -> [String] {
@@ -136,6 +156,10 @@ final class FakeTransport: OntTransport, @unchecked Sendable {
     func send(_ request: OntRequest, host: String) async throws -> String {
         lock.lock(); defer { lock.unlock() }
         requests.append(request)
+        recordedRequests.append((host: host, request: request))
+        if failingHosts.contains(host) {
+            throw URLError(.cannotConnectToHost)
+        }
         guard let index = routes.lastIndex(where: { request.path.hasPrefix($0.0) }) else {
             throw URLError(.fileDoesNotExist)
         }
@@ -148,5 +172,6 @@ final class FakeTransport: OntTransport, @unchecked Sendable {
     func resetSession(host: String) async {
         lock.lock(); defer { lock.unlock() }
         resets += 1
+        resetHosts.append(host)
     }
 }
