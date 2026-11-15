@@ -231,7 +231,7 @@ public enum OntError: LocalizedError, Equatable {
         case .invalidWifiPassword:
             return "Wi-Fi password must be 8 to 63 printable ASCII characters."
         case .unsupportedWifiSecurity(let mode):
-            return "Editing is only supported for WPA2-PSK and WPA3-PSK networks (current: \(mode))."
+            return "This network uses \(mode). Change it in the router's web page."
         case .incompleteWifiConfig(let fields):
             return "Cannot edit this Wi-Fi network safely because required settings were missing from WlanBasic.asp: \(fields.joined(separator: ", "))."
         case .notConfirmed:
@@ -336,14 +336,9 @@ public enum WifiAuthMode: Equatable, Sendable {
         }
     }
 
-    /// Modes supported by the #704 SSID/password edit flow (WPA2-PSK, WPA3-SAE, WPA2/WPA3-PSK).
+    /// Modes supported by the captured `#704` SSID/password edit flow (WPA2-PSK only).
     public var isEditableWpa2Or3Psk: Bool {
-        switch self {
-        case .wpa2Psk, .wpa3Psk, .wpa2Wpa3Psk:
-            return true
-        default:
-            return false
-        }
+        self == .wpa2Psk
     }
 
     /// Authentication label shown in the UI and QR sheet.
@@ -504,15 +499,9 @@ public struct WifiSsidConfig: Equatable, Sendable, Identifiable {
         if encryptionLevel.isEmpty { missing.append("w.WEPEncryptionLevel") }
         if wpaRekey.isEmpty { missing.append("y.X_HW_GroupRekey") }
         if !hasWlanWifiRecord || standard.isEmpty { missing.append("w.Standard") }
-        switch authMode {
-        case .wpa2Psk:
+        if authMode == .wpa2Psk {
             if ieee11iAuthenticationMode.isEmpty { missing.append("y.IEEE11iAuthenticationMode") }
             if ieee11iEncryptionModes.isEmpty { missing.append("y.IEEE11iEncryptionModes") }
-        case .wpa3Psk, .wpa2Wpa3Psk:
-            if mixAuthenticationMode.isEmpty { missing.append("y.X_HW_WPAand11iAuthenticationMode") }
-            if mixEncryptionModes.isEmpty { missing.append("y.X_HW_WPAand11iEncryptionModes") }
-        default:
-            break
         }
         if !hasPskRecord || isPasswordMasked || psk.isEmpty { missing.append("PreSharedKey") }
         if !hasWpsRecord || wpsEnable.isEmpty || wpsConfigMethod.isEmpty || wpsPinGenerator.isEmpty || wpsDevicePassword.isEmpty {

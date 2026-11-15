@@ -220,10 +220,13 @@ final class Phase4WritesTests: XCTestCase {
         XCTAssertEqual(req.form.map(\.0), expectedKeys)
 
         let values = Dictionary(uniqueKeysWithValues: req.form)
-        // User-edited fields (only these 3 change to new user inputs)
+        // User-edited fields (4 fields take the new user inputs: y.SSID, w.SSID, k.PreSharedKey, w.Key)
+        XCTAssertNotEqual(cfg.psk, "NewSecret!42")
         XCTAssertEqual(values["y.SSID"], "NewHome5G")
         XCTAssertEqual(values["w.SSID"], "NewHome5G")
         XCTAssertEqual(values["k.PreSharedKey"], "NewSecret!42")
+        XCTAssertEqual(values["w.Key"], "NewSecret!42")
+        XCTAssertEqual(values["w.Key"], values["k.PreSharedKey"])
         // Non-capture parsed fields preserved dynamically
         XCTAssertEqual(values["y.SSIDAdvertisementEnabled"], "0")
         XCTAssertEqual(values["w.SSIDAdvertisementEnabled"], "0")
@@ -242,23 +245,33 @@ final class Phase4WritesTests: XCTestCase {
         XCTAssertEqual(values["w.Standard"], "11ac")
         XCTAssertEqual(values["w.WEPEncryptionLevel"], "64-bit")
         XCTAssertEqual(values["w.WEPKeyIndex"], "2")
-        XCTAssertEqual(values["w.Key"], "OldSecret99")
         XCTAssertEqual(values["x.X_HW_Token"], "tok704")
     }
 
-    func testWifiEditRequestSupportsWpa3AndRefusesWpaWpa2OpenOrMasked() throws {
+    func testWifiEditRequestRefusesWpa3Wpa2Wpa3WpaWpa2OpenAndMasked() throws {
         let wpa3Html = Fixtures.gnmtnWlanBasic().replacingOccurrences(
             of: #""11i","None","None","1","104\x2dbit","TKIPEncryption","PSKAuthentication","TKIPandAESEncryption","PSKAuthentication","TKIPandAESEncryption","PSKAuthentication""#,
             with: #""WPA3","None","None","1","104\x2dbit","TKIPEncryption","EAPAuthentication","AESEncryption","EAPAuthentication","AESEncryption","SAEAuthentication""#
         )
         let wpa3Cfg = try XCTUnwrap(HuaweiOntClient.parseWlanBasic(wpa3Html).first { $0.ssidIndex == 2 })
         XCTAssertEqual(wpa3Cfg.authMode, .wpa3Psk)
-        let wpa3Req = try HuaweiOntClient.wifiEditRequest(config: wpa3Cfg, newSsid: "Wpa3Net", newPassword: "StrongPassword1", token: "tok3")
-        XCTAssertEqual(wpa3Req.form.count, 36)
-        XCTAssertEqual(wpa3Req.form[5].0, "y.X_HW_WPAand11iAuthenticationMode")
-        XCTAssertEqual(wpa3Req.form[5].1, "SAEAuthentication")
-        XCTAssertEqual(wpa3Req.form[6].0, "y.X_HW_WPAand11iEncryptionModes")
-        XCTAssertEqual(wpa3Req.form[6].1, "AESEncryption")
+        XCTAssertFalse(wpa3Cfg.authMode.isEditableWpa2Or3Psk)
+        XCTAssertThrowsError(try HuaweiOntClient.wifiEditRequest(config: wpa3Cfg, newSsid: "Wpa3Net", newPassword: "StrongPassword1", token: "tok3")) { err in
+            XCTAssertEqual(err as? OntError, .unsupportedWifiSecurity("WPA3-SAE"))
+            XCTAssertEqual(err.localizedDescription, "This network uses WPA3-SAE. Change it in the router's web page.")
+        }
+
+        let wpa23Html = Fixtures.gnmtnWlanBasic().replacingOccurrences(
+            of: #""11i","None","None","1","104\x2dbit","TKIPEncryption","PSKAuthentication","TKIPandAESEncryption","PSKAuthentication","TKIPandAESEncryption","PSKAuthentication""#,
+            with: #""WPA2/WPA3","None","None","1","104\x2dbit","TKIPEncryption","EAPAuthentication","AESEncryption","EAPAuthentication","AESEncryption","PSKandSAEAuthentication""#
+        )
+        let wpa23Cfg = try XCTUnwrap(HuaweiOntClient.parseWlanBasic(wpa23Html).first { $0.ssidIndex == 2 })
+        XCTAssertEqual(wpa23Cfg.authMode, .wpa2Wpa3Psk)
+        XCTAssertFalse(wpa23Cfg.authMode.isEditableWpa2Or3Psk)
+        XCTAssertThrowsError(try HuaweiOntClient.wifiEditRequest(config: wpa23Cfg, newSsid: "Wpa23Net", newPassword: "StrongPassword1", token: "tok4")) { err in
+            XCTAssertEqual(err as? OntError, .unsupportedWifiSecurity("WPA2/WPA3-PSK"))
+            XCTAssertEqual(err.localizedDescription, "This network uses WPA2/WPA3-PSK. Change it in the router's web page.")
+        }
 
         let all = HuaweiOntClient.parseWlanBasic(Fixtures.gnmtnWlanBasic())
         let c1WpaWpa2 = try XCTUnwrap(all.first { $0.ssidIndex == 1 })

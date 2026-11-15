@@ -655,7 +655,7 @@ public actor HuaweiOntClient {
     }
 
     /// Builds the exact `#704` POST request from parsed `WlanBasic.asp` configuration, preserving field order
-    /// and modifying only `y.SSID`, `w.SSID`, and `k.PreSharedKey`.
+    /// and setting the 4 user-controlled fields (`y.SSID`, `w.SSID`, `k.PreSharedKey`, `w.Key`).
     static func wifiEditRequest(
         config: WifiSsidConfig,
         newSsid: String,
@@ -673,19 +673,8 @@ public actor HuaweiOntClient {
 
         let domain = config.domain
         let ssidInst = String(config.ssidIndex)
-        let encryptionMode = (config.authMode == .wpa2Psk)
-            ? config.ieee11iEncryptionModes
-            : config.mixEncryptionModes
-        let yAuthField: (String, String) = (config.authMode == .wpa2Psk)
-            ? ("y.IEEE11iAuthenticationMode", config.ieee11iAuthenticationMode)
-            : ("y.X_HW_WPAand11iAuthenticationMode", config.mixAuthenticationMode)
-        let yEncField: (String, String) = (config.authMode == .wpa2Psk)
-            ? ("y.IEEE11iEncryptionModes", config.ieee11iEncryptionModes)
-            : ("y.X_HW_WPAand11iEncryptionModes", config.mixEncryptionModes)
-        let wIeeeAuth = (config.authMode == .wpa2Psk) ? config.ieee11iAuthenticationMode : "EAPAuthentication"
-        let wMixAuth = (config.authMode == .wpa3Psk || config.authMode == .wpa2Wpa3Psk)
-            ? config.mixAuthenticationMode
-            : "EAPAuthentication"
+        let encryptionMode = config.ieee11iEncryptionModes
+        let ieeeAuth = config.ieee11iAuthenticationMode
 
         let path = "/html/amp/wlanbasic/set.cgi"
             + "?c1=InternetGatewayDevice.X_HW_DEBUG.WLANConfigAction"
@@ -702,8 +691,8 @@ public actor HuaweiOntClient {
             ("y.SSID", newSsid),
             ("y.X_HW_AssociateNum", config.deviceNum),
             ("y.BeaconType", config.beaconType),
-            yAuthField,
-            yEncField,
+            ("y.IEEE11iAuthenticationMode", ieeeAuth),
+            ("y.IEEE11iEncryptionModes", encryptionMode),
             ("k.PreSharedKey", newPassword),
             ("y.X_HW_GroupRekey", config.wpaRekey),
             ("z.Enable", config.wpsEnable),
@@ -718,9 +707,9 @@ public actor HuaweiOntClient {
             ("w.BasicEncryptionModes", encryptionMode),
             ("w.WPAAuthenticationMode", "EAPAuthentication"),
             ("w.WPAEncryptionModes", encryptionMode),
-            ("w.IEEE11iAuthenticationMode", wIeeeAuth),
+            ("w.IEEE11iAuthenticationMode", ieeeAuth),
             ("w.IEEE11iEncryptionModes", encryptionMode),
-            ("w.MixAuthenticationMode", wMixAuth),
+            ("w.MixAuthenticationMode", "EAPAuthentication"),
             ("w.MixEncryptionModes", encryptionMode),
             ("w.SSIDAdvertisementEnabled", config.wlHide),
             ("w.WMMEnable", config.wmmEnable),
@@ -728,7 +717,7 @@ public actor HuaweiOntClient {
             ("w.BeaconType", config.beaconType),
             ("w.WEPEncryptionLevel", config.encryptionLevel),
             ("w.WEPKeyIndex", config.keyIndex),
-            ("w.Key", config.psk),
+            ("w.Key", newPassword),
             ("c1.ActionType", "0"),
             ("c2.ActionType", "1"),
             ("c2.SSIDList", ssidInst),

@@ -280,7 +280,7 @@ public final class MonitorViewModel: ObservableObject {
         }
     }
 
-    /// Saves a new SSID/passphrase for an editable WPA2-PSK or WPA3-PSK SSID via `#704`.
+    /// Saves a new SSID/passphrase for a WPA2-PSK SSID via `#704`.
     public func updateWifiCredentials(
         config: WifiSsidConfig,
         newSsid: String,

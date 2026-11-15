@@ -389,7 +389,7 @@ private struct WifiQrSheet: View {
     }
 }
 
-/// Ephemeral editor for WPA2-PSK / WPA3-PSK SSID & passphrase (`#704`).
+/// Ephemeral editor for WPA2-PSK SSID & passphrase (`#704`).
 /// Refuses edits when security mode is unsupported or required `WlanBasic.asp` fields are missing/masked,
 /// requires typed SSID confirmation before submit, and wipes sensitive state on dismiss/background.
 private struct WifiEditSheet: View {
@@ -467,7 +467,7 @@ private struct WifiEditSheet: View {
                     if !config.authMode.isEditableWpa2Or3Psk {
                         refusalView(
                             title: "Unsupported Security Mode",
-                            message: "Editing is limited to WPA2-PSK and WPA3-PSK networks. This SSID currently uses \(config.authMode.displayName)."
+                            message: "This network uses \(config.authMode.displayName). Change it in the router's web page."
                         )
                     } else if !config.missingEditFields.isEmpty {
                         refusalView(

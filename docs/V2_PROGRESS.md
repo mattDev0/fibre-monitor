@@ -103,20 +103,20 @@ Every index `0...43` in `HuaweiOntClient.wanPppParams` matches the 44-argument `
 - **Wi-Fi radio toggle disconnect warning (`WifiTabView.swift`, `MonitorViewModel.swift`):**
   - Added `NWPathMonitor`-backed `isPhoneOnWifi` flag (no Location or Wi-Fi Info entitlement needed) and enhanced the radio-off confirmation alert to warn explicitly that turning off the connected radio disconnects the app immediately.
 - **Wi-Fi SSID & password edit (`#704`, `OntModels.swift`, `HuaweiOntClient.swift`, `WifiTabView.swift`):**
-  - Updated `parseWlanBasic(_:)` to track record presence (`hasWlanWifiRecord`, `hasPskRecord`, `hasWpsRecord`) without capture defaults, and added `WifiSsidConfig.missingEditFields` + `WifiAuthMode.isEditableWpa2Or3Psk`.
-  - Added `HuaweiOntClient.validateWifiCredentials(ssid:password:)` (SSID 1–32 UTF-8 printable bytes; password 8–63 printable ASCII `0x20...0x7E`), `wifiEditRequest(config:newSsid:newPassword:token:)` producing the exact 36-field `#704` payload dynamically from parsed `WlanBasic.asp` fields (modifying only `y.SSID`, `w.SSID`, and `k.PreSharedKey`, and refusing non-WPA2/WPA3-PSK or incomplete/masked configs), and `updateWifiCredentials(...)` returning `WifiUpdateResult(wifi:connectionDropped:)` cleanly when `#704` triggers an expected mid-save Wi-Fi drop.
+  - Updated `parseWlanBasic(_:)` to track record presence (`hasWlanWifiRecord`, `hasPskRecord`, `hasWpsRecord`) without capture defaults, and added `WifiSsidConfig.missingEditFields` + `WifiAuthMode.isEditableWpa2Or3Psk` (updated in Phase 5.1 to return `true` strictly for `.wpa2Psk`).
+  - Added `HuaweiOntClient.validateWifiCredentials(ssid:password:)` (SSID 1–32 UTF-8 printable bytes; password 8–63 printable ASCII `0x20...0x7E`), `wifiEditRequest(config:newSsid:newPassword:token:)` producing the exact 36-field `#704` payload dynamically from parsed `WlanBasic.asp` fields (setting the 4 user fields `y.SSID`, `w.SSID`, `k.PreSharedKey`, and `w.Key` to the new SSID/password and refusing non-WPA2-PSK or incomplete/masked configs), and `updateWifiCredentials(...)` returning `WifiUpdateResult(wifi:connectionDropped:)` cleanly when `#704` triggers an expected mid-save Wi-Fi drop.
   - Added `"Edit"` action in `WifiTabView` opening `WifiEditSheet` (ephemeral fetch, live validation, security/missing-field refusal cards, passphrase reveal toggle, and typed-SSID confirmation sheet warning that devices disconnect and the iPhone must rejoin) wiping state on dismiss and `.background`.
 - **Haptic feedback:** Added `@MainActor public enum Haptics` triggered on router writes (`setRadio`, `updateWifiCredentials`, `renameDeviceOnRouter`, `removeDevice`, `reboot`, local alias save).
-- **Tests (`FibreMonitorTests/Phase4WritesTests.swift`):** Added unit tests covering `#198` validation/request/refetch, `missingEditFields` detection, `#704` exact 36-key order with non-capture values, WPA3 field mapping, refusal of unsupported/masked modes, graceful mid-save connection drop handling, and `MonitorViewModel` write/last-radio behavior.
+- **Tests (`FibreMonitorTests/Phase4WritesTests.swift`):** Added unit tests covering `#198` validation/request/refetch, `missingEditFields` detection, `#704` exact 36-key order with non-capture values (verifying `w.Key == k.PreSharedKey == newPassword`), refusal of non-WPA2-PSK / masked modes, graceful mid-save connection drop handling, and `MonitorViewModel` write/last-radio behavior.
 
 ### Decisions & Capture Notes
-- **`#704` `w.Key` behavior:** In `amp_wlanbasic_WlanBasic.asp`, `AddParaForCover(Form)` populates `w.Key` from the form's existing/active PSK field while `#704` sends the updated passphrase in `k.PreSharedKey`. Per Phase 4 plan, `wifiEditRequest` keeps `w.Key` equal to parsed `config.psk` so only `y.SSID`, `w.SSID`, and `k.PreSharedKey` change; confirm on real EasyMesh / Wi-Fi Cover hardware whether `w.Key` should stay the prior key or match the new password.
-- **`y.` fields for WPA3 / WPA2-WPA3:** Capture `#704` was recorded on `11i` (`.wpa2Psk`) using `y.IEEE11iAuthenticationMode` and `y.IEEE11iEncryptionModes`. For `.wpa3Psk` and `.wpa2Wpa3Psk`, `wifiEditRequest` substitutes `y.X_HW_WPAand11iAuthenticationMode` and `y.X_HW_WPAand11iEncryptionModes` based on `amp_wlanbasic_WlanBasic.asp` `addParameter1`; needs real hardware verification.
+- **`#704` `w.Key` behavior (updated in Phase 5.1):** Per `WlanBasic.asp` l.4300–4347 and Review 1, `wifiEditRequest` sets both `k.PreSharedKey` and `w.Key` to `newPassword` alongside `y.SSID` and `w.SSID`.
+- **Supported edit mode (updated in Phase 5.1):** Capture `#704` was recorded strictly on WPA2-PSK (`11i` / `PSKAuthentication`), so editing is restricted to `.wpa2Psk`; other modes direct the user to the router's web page.
 
 ---
 
 ## Phase 5: Polish, documentation, and v2.0.0 release prep
-**Status:** Implemented (awaiting final Phase 5 CI run on `v2`).
+**Status:** Verified on CI (`ios-build` run `43765390285` passed on `6e016be`).
 
 ### What was done
 - **Empty, loading, error, pull-to-refresh, VoiceOver & contrast polish:**
@@ -129,11 +129,20 @@ Every index `0...43` in `HuaweiOntClient.wanPppParams` matches the 44-argument `
 
 ---
 
+## Phase 5.1: Review 1 fixes
+**Status:** Implemented (awaiting Phase 5.1 CI run on `v2`).
+
+### What was done
+- **Fix `#704` `w.Key` value (`HuaweiOntClient.swift`, `Phase4WritesTests.swift`):** Updated `wifiEditRequest` so `w.Key` sends `newPassword` (matching `k.PreSharedKey`, per `WlanBasic.asp` l.4300–4347) and documented all 4 user-controlled fields (`y.SSID`, `w.SSID`, `k.PreSharedKey`, `w.Key`). Updated `Phase4WritesTests` so old and new passwords differ and assert `w.Key == k.PreSharedKey == newPassword`.
+- **Restrict `#704` editing strictly to WPA2-PSK (`OntModels.swift`, `HuaweiOntClient.swift`, `MonitorViewModel.swift`, `WifiTabView.swift`, `Phase4WritesTests.swift`, `README.md`):** Restricted `WifiAuthMode.isEditableWpa2Or3Psk` to `.wpa2Psk` only, removed all WPA3 / WPA2+WPA3 branching (`y.X_HW_WPAand11i*`, `mixEncryptionModes`, `mixAuthenticationMode`) from `wifiEditRequest` and `WifiSsidConfig.missingEditFields`, aligned unsupported-mode copy (`"This network uses <mode>. Change it in the router's web page."`), and converted the WPA3 test into a refusal test.
+
+---
+
 ## Hardware Verification Checklist (For Physical iPhone & Friend's GNMTNNCE HG8145X6)
 1. **Multi-router & migration:** Install over v1.2.0 (`1.2.0 (3)`) and confirm `SystemKeychainStore` migrates legacy `router-password` to the new profile UUID entry without losing host/username/local aliases; add MTN template profile (`192.168.2.1`) and test launch picker + live switching.
 2. **Dashboard & Optical/WAN:** Confirm Optical Rx range bar position & quality pill, WAN IP / gateway / DNS / uptime (both PPPoE and IPoE if applicable), and graceful hiding of `System Load` / `ONT Uptime` / `Tx Laser Power` when `deviceinfo.asp` / `getOpticTxRx.asp` are absent.
 3. **Clients & `#198` Router Rename:** Confirm non-zero `TrafficSendRate`/`TrafficRecvRate` units match live speeds (bytes/s vs KB/s), test `Rename on Router` persistence and max length on GNMTNNCE (`bbsp_userdevinfo_userdetdevinfo.asp` had no JS limit), and test `Remove from Router List` on an offline client.
-4. **Wi-Fi QR & `#704` Credential Edit:** Verify `WlanBasic.asp` vs `?2G`/`?5G` behavior and whether `wifiPasswordMask` is `'0'` or `'1'`; test scanning generated QR codes with iOS/Android Camera; test radio toggles (including connected-band disconnect warning) and `#704` SSID/password change on WPA2-PSK (and WPA3-PSK if enabled), paying close attention to `w.Key` behavior if EasyMesh / Wi-Fi Cover is active.
+4. **Wi-Fi QR & `#704` Credential Edit:** Verify `WlanBasic.asp` vs `?2G`/`?5G` behavior and whether `wifiPasswordMask` is `'0'` or `'1'`; test scanning generated QR codes with iOS/Android Camera; test radio toggles (including connected-band disconnect warning) and `#704` SSID/password change on WPA2-PSK (and verify non-WPA2-PSK networks display `"This network uses <mode>. Change it in the router's web page."`).
 5. **Second HTTP capture requested (from `docs/V2_PLAN.md` §4):** With DevTools "Preserve log" enabled, log into the friend's GNMTNNCE ONT and open **System Information → Device Information**, **Optical Information**, **Maintenance Diagnosis → ping `8.8.8.8`**, **WAN Information**, then log out — to verify `deviceinfo.asp`, `getOpticTxRx.asp`, `diagnosecommon.asp`, and `logout.cgi` on that firmware.
 
 ## Needs capture / Unverified on GNMTNNCE hardware
@@ -143,6 +152,6 @@ Every index `0...43` in `HuaweiOntClient.wanPppParams` matches the 44-argument `
 - `POST /logout.cgi?RequestFile=html/logout.html` — not captured on GNMTNNCE.
 - `GET /html/amp/wlanbasic/WlanBasic.asp` vs `?2G`/`?5G` behavior when router uses a different firmware variant or `wifiPasswordMask = '1'`.
 - Live hardware verification of `#198` `UserDevAlias` persistence & max length on GNMTNNCE (`bbsp_userdevinfo_userdetdevinfo.asp` had no JS limit).
-- Live hardware verification of `#704` Wi-Fi credential edit (especially `w.Key` under Wi-Fi Cover/EasyMesh and WPA3 `y.X_HW_WPAand11i*` fields).
+- Live hardware verification of `#704` WPA2-PSK Wi-Fi credential edit on GNMTNNCE (and capture if WPA3/WPA2+WPA3 editing is ever desired).
 - Non-zero `TrafficSendRate` / `TrafficRecvRate` unit confirmation (all devices in `bbsp_common_GetLanUserDevInfo.asp` reported `"0"`).
 - Live `SystemKeychainStore` migration on a physical device.
